@@ -6,6 +6,8 @@ Create an independent copy of the existing local Telegram Bot API proxy in this 
 
 The user selected a separate YAML configuration file, supplied through Docker Compose `configs` with `file: ./config.yaml`, and requested automatic reload: an invalid update must be logged and must not replace the last valid configuration. The source checkout is read-only; its Git history and platform operations are not imported.
 
+Approval: the user approved this design, the implementation plan, native execution, and the minimum application-specific integration on 2026-11-05.
+
 ## Approaches
 
 1. Separate YAML file supplied through Compose `configs.file`: readable client lists and comments, independent of container settings. Selected by the user, including the single-file mount limitation described below. A directory bind mount is not the selected approach.
