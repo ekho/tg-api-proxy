@@ -50,7 +50,7 @@
 
 **Interfaces:**
 - `ParseAccessConfig(raw []byte) (*AccessConfig, error)` parses the complete YAML policy.
-- `(*AccessConfig).Authorize(botID string, ip netip.Addr) *Client` returns a client only for exactly one match.
+- `(*AccessConfig).Authorize(botID string, ip netip.Addr) *accessClient` returns a client only for exactly one match.
 - Use `atomic.Pointer[AccessConfig]` directly to publish/read complete immutable snapshots; do not add an `AccessStore` wrapper.
 - After explicit approval for the described application integration, `WatchAccessFile(ctx context.Context, path string, interval time.Duration, current *atomic.Pointer[AccessConfig], logger *slog.Logger)` polls until cancellation; the caller supplies exactly `time.Second` in production and joins the watcher.
 
@@ -89,8 +89,8 @@
 - [x] Write README instructions: copy `config.example.yaml` to `config.yaml`, set clients and exact trusted proxy addresses, `docker compose up -d --build`, live reload behavior and logs, Nginx forwarding/TLS example, and shared Docker network alternative without published ports. Explain the single-file bind-mount limitation of `configs.file`: changes to the existing file are visible, while rename-based saves may require `docker compose up -d --force-recreate`; the service cannot detect host contents hidden by the mount. Distinguish this from atomic application of a validated policy. Use only synthetic IDs and reserved documentation IPs. Explain that an admitted in-flight request completes after revocation.
 - [x] Add independent read-only CI running build, vet, uncached tests and formatting checks. Do not copy deployment, notification or access-management workflows.
 - [x] Run `gofmt`, `go build ./...`, `go vet ./...`, `go test -race ./... -count=1`, `docker compose config --quiet`, a scan of all delivered files for forbidden names/domains and obsolete auth/tunnel references, and `git diff --check`. Re-run only checks justified by new edits.
-- [ ] If the Docker daemon is available, build and run with isolated temporary configuration supplied through `configs.file`; verify `/healthz`, blocked-IP behavior, valid/invalid reload and recovery using in-place host-file updates. Separately inspect rename visibility on this backend and ensure README does not promise it. Do not make Telegram requests or change the user's running services. Remove temporary containers afterward. If unavailable, record the unverified Docker runtime step explicitly.
-- [ ] Obtain independent whole-change review, address actionable findings, run affected checks and commit the completed result with a Conventional Commit and co-author footer. Do not push or deploy externally.
+- [x] If the Docker daemon is available, build and run with isolated temporary configuration supplied through `configs.file`; verify `/healthz`, blocked-IP behavior, valid/invalid reload and recovery using in-place host-file updates. Separately inspect rename visibility on this backend and ensure README does not promise it. Do not make Telegram requests or change the user's running services. Remove temporary containers afterward. If unavailable, record the unverified Docker runtime step explicitly.
+- [x] Obtain independent whole-change review, address actionable findings, run affected checks and commit the completed result with a Conventional Commit and co-author footer. Do not push or deploy externally.
 
 ## Execution recommendation
 
