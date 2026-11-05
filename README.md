@@ -13,7 +13,8 @@ redacted in logs.
 ```sh
 cp config.example.yaml config.yaml
 # Set your clients, bot IDs, allowed IPs, and trusted proxy addresses.
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 docker compose logs -f tg-api-proxy
 ```
 
@@ -37,6 +38,31 @@ configs:
 By default, the HTTP port is published only on `127.0.0.1:8080`. Put your HTTPS
 reverse proxy in front of it. The container runs as a non-root user with a
 read-only filesystem and configuration.
+
+## Published images
+
+GitHub Actions builds and publishes `ghcr.io/ekho/tg-api-proxy` after the CI checks
+pass. Images support `linux/amd64` and `linux/arm64`.
+
+| Trigger | Image tags |
+|---|---|
+| Push to `main` | `latest`, `sha-<full commit SHA>` |
+| Push a `v*` Git tag, such as `v1.2.3` | `v1.2.3`, `sha-<full commit SHA>` |
+| Manual run (`workflow_dispatch`) | SHA tag; `latest` only when running from `main` |
+
+Pull requests run checks without publishing. Version tags do not update `latest`.
+The publishing job uses the built-in `GITHUB_TOKEN` with `packages: write`; no
+additional repository secret is required. Docker Actions are pinned to commit
+SHAs. The image is published only when the workflow runs successfully on GitHub.
+
+`compose.yaml` uses `ghcr.io/ekho/tg-api-proxy:latest` by default. Run
+`docker compose pull` before `docker compose up -d` to download the current image.
+To reference a particular revision, change the image tag in Compose to a version
+or SHA tag. If the package is private, authenticate Docker to GHCR before pulling.
+The first image becomes available only after a successful publication workflow.
+
+For a local container build, run `docker build -t tg-api-proxy:dev .` and set
+`image: tg-api-proxy:dev` in Compose. Keep the remaining settings and `configs`.
 
 ## Client rules
 

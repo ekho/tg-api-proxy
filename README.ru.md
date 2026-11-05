@@ -12,7 +12,8 @@
 ```sh
 cp config.example.yaml config.yaml
 # Укажите своих клиентов, bot_id, разрешённые IP и адреса доверенных прокси.
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 docker compose logs -f tg-api-proxy
 ```
 
@@ -36,6 +37,33 @@ configs:
 По умолчанию HTTP-порт опубликован только на `127.0.0.1:8080`. Перед ним должен
 работать ваш reverse proxy с HTTPS. Контейнер работает без root, с файловой
 системой и конфигурацией только для чтения.
+
+## Готовые образы
+
+GitHub Actions собирает и публикует `ghcr.io/ekho/tg-api-proxy` после успешных
+проверок CI. Образы поддерживают `linux/amd64` и `linux/arm64`.
+
+| Событие | Теги образа |
+|---|---|
+| Push в `main` | `latest`, `sha-<полный SHA коммита>` |
+| Push Git-тега `v*`, например `v1.2.3` | `v1.2.3`, `sha-<полный SHA коммита>` |
+| Ручной запуск (`workflow_dispatch`) | SHA-тег; `latest` только при запуске из `main` |
+
+Pull request запускает проверки без публикации. Версионные теги не обновляют
+`latest`. Задача публикации использует встроенный `GITHUB_TOKEN` с правом
+`packages: write`; дополнительный секрет репозитория не нужен. Docker Actions
+закреплены на точных SHA коммитов. Образ появится в реестре только после успешного
+запуска workflow на GitHub.
+
+`compose.yaml` по умолчанию использует `ghcr.io/ekho/tg-api-proxy:latest`.
+Перед `docker compose up -d` выполните `docker compose pull`, чтобы скачать
+актуальный образ. Для выбора конкретной ревизии измените тег образа в Compose
+на версионный или SHA-тег. Если пакет закрытый, перед скачиванием войдите в GHCR
+через Docker. Первый образ появится только после успешного workflow публикации.
+
+Для локальной сборки контейнера выполните `docker build -t tg-api-proxy:dev .`
+и укажите в Compose `image: tg-api-proxy:dev`. Остальные настройки и `configs`
+оставьте без изменений.
 
 ## Правила клиентов
 

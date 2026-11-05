@@ -1,3 +1,6 @@
+# Run ghcr.io/ekho/tg-api-proxy:latest using compose.yaml.
+# This file configures client access; the image is selected in Compose.
+
 # Replace this with the exact IP or dedicated subnet of your reverse proxy.
 # [] uses only the TCP peer address and ignores forwarding headers.
 trusted_proxies:
