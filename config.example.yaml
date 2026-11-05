@@ -1,0 +1,20 @@
+# Replace this with the exact IP or dedicated subnet of your reverse proxy.
+# [] uses only the TCP peer address and ignores forwarding headers.
+trusted_proxies:
+  - "172.30.0.10"
+
+clients:
+  - name: service-a
+    # Numeric part before ':' in the Telegram token. Do not put tokens here.
+    bot_ids: ["123456"]
+    allowed_ips:
+      - "203.0.113.10"               # single IPv4
+      - "198.51.100.0/24"            # subnet
+      - "192.0.2.10-192.0.2.30"      # inclusive range
+      - "2001:db8::10"               # single IPv6
+      - "2001:db8:1::/48"            # IPv6 subnet
+      - "2001:db8:2::10-2001:db8:2::30"
+
+  - name: service-b
+    bot_ids: ["654321", "654322"]
+    allowed_ips: ["203.0.113.20", "203.0.113.30"]

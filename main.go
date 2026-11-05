@@ -1,7 +1,7 @@
 // Command tg-api-proxy — прозрачный реверс-прокси Telegram Bot API.
 //
-// Выпускает запросы сервисов, живущих вне платформы, к api.telegram.org через
-// платформенный egress-туннель (LLM_PROXY_URL). Токены ботов не хранит:
+// Перенаправляет запросы к api.telegram.org напрямую или через HTTPS_PROXY.
+// Токены ботов не хранит:
 // клиент передаёт токен в пути запроса, прокси передаёт его дальше как есть.
 package main
 
@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -21,15 +22,12 @@ import (
 
 // shutdownGrace — сколько ждём завершения текущих запросов при остановке.
 // Больше дедлайна long poll (45 с), иначе выкат обрывал бы активные опросы.
-// В deployment.yaml terminationGracePeriodSeconds должен быть ещё больше,
-// иначе Kubernetes пришлёт SIGKILL раньше, чем сервер успеет закрыться.
+// stop_grace_period в compose.yaml покрывает и этот бюджет, и flush телеметрии.
 const shutdownGrace = 60 * time.Second
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
-
-	shutdownTelemetry := telemetry.Setup(context.Background(), logger)
 
 	settings, err := tgproxy.LoadSettings(os.Getenv)
 	if err != nil {
@@ -38,6 +36,20 @@ func main() {
 		logger.Error("config rejected", "err", err)
 		os.Exit(1)
 	}
+	raw, err := os.ReadFile(settings.ConfigFile)
+	if err != nil {
+		logger.Error("initial config read failed", "err", err)
+		os.Exit(1)
+	}
+	initial, err := tgproxy.ParseAccessConfig(raw)
+	if err != nil {
+		logger.Error("initial config rejected", "err", err)
+		os.Exit(1)
+	}
+	var access atomic.Pointer[tgproxy.AccessConfig]
+	access.Store(initial)
+	settings.Handler.Access = &access
+	shutdownTelemetry := telemetry.Setup(context.Background(), logger)
 	settings.Handler.Logger = logger
 
 	handler, err := tgproxy.NewHandler(settings.Handler)
@@ -64,11 +76,17 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		tgproxy.WatchAccessFile(ctx, settings.ConfigFile, time.Second, &access, logger)
+	}()
 
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)
 		<-ctx.Done()
+		<-watchDone
 		logger.Info("shutdown signal received, draining in-flight requests")
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
@@ -80,8 +98,7 @@ func main() {
 		// Сброс телеметрии — строго ПОСЛЕ srv.Shutdown. В момент сигнала висит
 		// до 45 с активных long poll, чьи спаны ещё не закрыты: ранний flush
 		// отправил бы пустоту и потерял бы ровно те запросы, которые прервал
-		// выкат. Бюджет: 60 с + 5 с = 65 с против terminationGracePeriodSeconds
-		// 75 — увеличение любого слагаемого требует правки манифеста.
+		// остановку. Бюджет: 60 с + 5 с = 65 с, меньше stop_grace_period в Compose.
 		flushCtx, flushCancel := context.WithTimeout(context.Background(), telemetry.ShutdownTimeout)
 		defer flushCancel()
 		if err := shutdownTelemetry(flushCtx); err != nil {

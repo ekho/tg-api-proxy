@@ -1,121 +1,45 @@
 package tgproxy
 
 import (
-	"strings"
 	"testing"
 	"time"
 )
 
-func envFrom(m map[string]string) func(string) string {
-	return func(k string) string { return m[k] }
-}
-
-func validEnv() map[string]string {
-	return map[string]string{
-		"LLM_PROXY_URL": "http://llm-proxy.platform.svc:3128",
-		"PROXY_CLIENTS": "codo:3f8a1c9e5b7d2f4a6c8e0b1d3f5a7c9e:123456,789012",
-	}
-}
+func envFrom(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
 
 func TestLoadSettingsValid(t *testing.T) {
-	s, err := LoadSettings(envFrom(validEnv()))
+	s, err := LoadSettings(envFrom(nil))
 	if err != nil {
-		t.Fatalf("неожиданная ошибка: %v", err)
+		t.Fatal(err)
 	}
-
-	if s.Addr != ":8080" {
-		t.Errorf("Addr = %q, want %q", s.Addr, ":8080")
-	}
-	if s.Handler.LongPollMax != 45*time.Second {
-		t.Errorf("LongPollMax = %v, want 45s", s.Handler.LongPollMax)
-	}
-	if s.Handler.Upstream == nil || s.Handler.Upstream.String() != "https://api.telegram.org" {
-		t.Errorf("Upstream = %v, want https://api.telegram.org", s.Handler.Upstream)
-	}
-	if s.Handler.ProxyURL == nil || s.Handler.ProxyURL.Host != "llm-proxy.platform.svc:3128" {
-		t.Errorf("ProxyURL = %v", s.Handler.ProxyURL)
-	}
-	client := s.Handler.Clients.Lookup("3f8a1c9e5b7d2f4a6c8e0b1d3f5a7c9e")
-	if client == nil {
-		t.Fatal("ключ клиента не принимается")
-	}
-	if client.Name != "codo" {
-		t.Errorf("имя клиента = %q, want %q", client.Name, "codo")
-	}
-	if !client.Allows("789012") {
-		t.Error("клиент не пускает бота 789012")
-	}
-}
-
-func TestLoadSettingsRequiresVars(t *testing.T) {
-	for _, missing := range []string{"LLM_PROXY_URL", "PROXY_CLIENTS"} {
-		t.Run("без "+missing, func(t *testing.T) {
-			env := validEnv()
-			delete(env, missing)
-
-			_, err := LoadSettings(envFrom(env))
-			if err == nil {
-				t.Fatalf("ожидалась ошибка без %s, получили nil", missing)
-			}
-			if !strings.Contains(err.Error(), missing) {
-				t.Errorf("ошибка не называет переменную %s: %v", missing, err)
-			}
-		})
-	}
-}
-
-func TestLoadSettingsRejectsBadValues(t *testing.T) {
-	tests := []struct {
-		name  string
-		key   string
-		value string
-	}{
-		{name: "неразбираемый адрес прокси", key: "LLM_PROXY_URL", value: "://нет-схемы"},
-		{name: "прокси без схемы", key: "LLM_PROXY_URL", value: "llm-proxy:3128"},
-		{name: "нечисловой таймаут", key: "LONG_POLL_MAX_TIMEOUT", value: "сорок"},
-		{name: "нулевой таймаут", key: "LONG_POLL_MAX_TIMEOUT", value: "0"},
-		{name: "нечисловой порт", key: "PORT", value: "восемь"},
-		{name: "привилегированный порт", key: "PORT", value: "80"},
-		{name: "нечисловой bot_id", key: "PROXY_CLIENTS", value: "codo:3f8a1c9e5b7d2f4a6c8e0b1d3f5a7c9e:123,abc"},
-		{name: "короткий ключ", key: "PROXY_CLIENTS", value: "codo:short:123456"},
-		{name: "запись без списка ботов", key: "PROXY_CLIENTS", value: "codo:3f8a1c9e5b7d2f4a6c8e0b1d3f5a7c9e"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			env := validEnv()
-			env[tt.key] = tt.value
-
-			if _, err := LoadSettings(envFrom(env)); err == nil {
-				t.Fatalf("ожидалась ошибка при %s=%q, получили nil", tt.key, tt.value)
-			}
-		})
+	if s.Addr != ":8080" || s.ConfigFile != "config.yaml" || s.Handler.LongPollMax != 45*time.Second || s.Handler.Upstream.String() != "https://api.telegram.org" {
+		t.Fatalf("unexpected defaults: %+v", s)
 	}
 }
 
 func TestLoadSettingsOptionalOverrides(t *testing.T) {
-	env := validEnv()
-	env["PORT"] = "9090"
-	env["LONG_POLL_MAX_TIMEOUT"] = "30"
-
-	s, err := LoadSettings(envFrom(env))
+	s, err := LoadSettings(envFrom(map[string]string{"CONFIG_FILE": "/config/config.yaml", "PORT": "9090", "LONG_POLL_MAX_TIMEOUT": "30"}))
 	if err != nil {
-		t.Fatalf("неожиданная ошибка: %v", err)
+		t.Fatal(err)
 	}
-	if s.Addr != ":9090" {
-		t.Errorf("Addr = %q, want %q", s.Addr, ":9090")
+	if s.ConfigFile != "/config/config.yaml" || s.Addr != ":9090" || s.Handler.LongPollMax != 30*time.Second {
+		t.Fatalf("overrides ignored: %+v", s)
 	}
-	if s.Handler.LongPollMax != 30*time.Second {
-		t.Errorf("LongPollMax = %v, want 30s", s.Handler.LongPollMax)
+}
+
+func TestLoadSettingsRejectsBadValues(t *testing.T) {
+	for _, tt := range []struct{ key, value string }{{"PORT", "text"}, {"PORT", "80"}, {"PORT", "65536"}, {"LONG_POLL_MAX_TIMEOUT", "zero"}, {"LONG_POLL_MAX_TIMEOUT", "0"}, {"LONG_POLL_MAX_TIMEOUT", "9223372036854775807"}} {
+		t.Run(tt.key+"/"+tt.value, func(t *testing.T) {
+			if _, err := LoadSettings(envFrom(map[string]string{tt.key: tt.value})); err == nil {
+				t.Fatal("invalid setting accepted")
+			}
+		})
 	}
 }
 
 func TestLoadSettingsLogExcludeMethods(t *testing.T) {
 	// baseEnv — минимальное окружение, при котором LoadSettings успешен.
-	baseEnv := map[string]string{
-		"LLM_PROXY_URL": "http://llm-proxy.ai-platform-egress.svc.cluster.local:3128",
-		"PROXY_CLIENTS": "codo:0123456789abcdef0123456789abcdef:123456",
-	}
+	baseEnv := map[string]string{}
 
 	envWith := func(raw string) func(string) string {
 		return func(k string) string {

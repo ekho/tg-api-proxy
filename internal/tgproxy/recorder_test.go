@@ -138,10 +138,10 @@ func TestFinalStatusSurvivesInformational1xx(t *testing.T) {
 	if err != nil {
 		t.Fatalf("разбор адреса апстрима: %v", err)
 	}
-	const secret = "0123456789abcdef0123456789abcdef"
+
 	handler, err := NewHandler(Config{
 		Upstream: upstreamURL,
-		Clients:  testClientsFor(t, secret),
+		Access:   testAccess(t, defaultAccessFixture),
 		Logger:   logger,
 	})
 	if err != nil {
@@ -155,7 +155,6 @@ func TestFinalStatusSurvivesInformational1xx(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
-	req.Header.Set(HeaderProxyKey, secret)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

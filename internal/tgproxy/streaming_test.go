@@ -43,11 +43,10 @@ func TestStreamingNotBufferedThroughMiddleware(t *testing.T) {
 	if err != nil {
 		t.Fatalf("разбор адреса апстрима: %v", err)
 	}
-	const secret = "0123456789abcdef0123456789abcdef"
 
 	handler, err := NewHandler(Config{
 		Upstream:    upstreamURL,
-		Clients:     testClientsFor(t, secret),
+		Access:      testAccess(t, defaultAccessFixture),
 		LongPollMax: 45 * time.Second,
 		LogFilter:   NewLogFilter(nil),
 		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
@@ -69,7 +68,6 @@ func TestStreamingNotBufferedThroughMiddleware(t *testing.T) {
 	if err != nil {
 		t.Fatalf("сборка запроса: %v", err)
 	}
-	req.Header.Set(HeaderProxyKey, secret)
 
 	// Потолок ставится на клиенте, а не на чтении тела. При буферизации ответа
 	// заголовки не уходят до его завершения, поэтому блокируется сам Do — до

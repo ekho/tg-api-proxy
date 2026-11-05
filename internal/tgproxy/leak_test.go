@@ -20,10 +20,8 @@ import (
 // secretPart — секретная часть токена бота.
 const secretPart = "AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"
 
-// clientKeyPart — ключ клиента. С переходом на персональные ключи он стал
-// вторым секретом, покидать процесс которому нельзя: в наблюдаемость должно
-// уезжать имя клиента, но никогда его ключ.
-const clientKeyPart = "LEAKCANARY0123456789abcdefabcdef"
+// headerSecretPart checks that arbitrary sensitive headers are not logged.
+const headerSecretPart = "LEAKCANARY0123456789abcdefabcdef"
 
 // TestNoTokenLeaksIntoObservability — центральный тест дизайна.
 //
@@ -53,11 +51,11 @@ func TestNoTokenLeaksIntoObservability(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 
-	const secret = clientKeyPart
+	const secret = headerSecretPart
 
 	handler, err := NewHandler(Config{
 		Upstream: upstreamURL,
-		Clients:  testClientsFor(t, secret),
+		Access:   testAccess(t, defaultAccessFixture),
 		// none: логируем всё, чтобы у токена был максимальный шанс просочиться.
 		LogFilter:      NewLogFilter(nil),
 		Logger:         slog.New(slog.NewJSONHandler(logBuf, nil)),
@@ -73,19 +71,20 @@ func TestNoTokenLeaksIntoObservability(t *testing.T) {
 	requests := []struct {
 		name string
 		path string
-		key  string
+		ip   string
 	}{
-		{name: "успех", path: "/bot123456:" + secretPart + "/getMe", key: secret},
-		{name: "отказ авторизации", path: "/bot123456:" + secretPart + "/getMe", key: "wrong-secret-value"},
-		{name: "бот чужого клиента", path: "/bot999999:" + secretPart + "/getMe", key: secret},
-		{name: "невалидный путь", path: "/nonsense/" + secretPart, key: secret},
-		{name: "скачивание файла", path: "/file/bot123456:" + secretPart + "/photos/f.jpg", key: secret},
+		{name: "успех", path: "/bot123456:" + secretPart + "/getMe", ip: "192.0.2.1"},
+		{name: "отказ авторизации", path: "/bot123456:" + secretPart + "/getMe", ip: "203.0.113.99"},
+		{name: "бот чужого клиента", path: "/bot999999:" + secretPart + "/getMe", ip: "192.0.2.1"},
+		{name: "невалидный путь", path: "/nonsense/" + secretPart, ip: "192.0.2.1"},
+		{name: "скачивание файла", path: "/file/bot123456:" + secretPart + "/photos/f.jpg", ip: "192.0.2.1"},
 	}
 
 	for _, req := range requests {
 		t.Run(req.name, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodGet, req.path, nil)
-			r.Header.Set(HeaderProxyKey, req.key)
+			r.RemoteAddr = req.ip + ":1234"
+			r.Header.Set("Authorization", secret)
 			handler.ServeHTTP(httptest.NewRecorder(), r)
 		})
 	}
@@ -104,7 +103,7 @@ func TestNoTokenLeaksIntoObservability(t *testing.T) {
 		value string
 	}{
 		{what: "токен бота", value: secretPart},
-		{what: "ключ клиента", value: clientKeyPart},
+		{what: "секретный заголовок", value: headerSecretPart},
 	}
 
 	// Канал 1: логи.
@@ -154,7 +153,7 @@ func TestNoTokenLeaksIntoObservability(t *testing.T) {
 	// этого тест прошёл бы и в случае, когда наблюдаемость про клиента не знает
 	// вовсе, — то есть охранял бы отсутствие того, чего и так нет.
 	if !strings.Contains(logBuf.String(), testClientName) {
-		t.Errorf("имя клиента отсутствует в логах — тест не отличает «ключ не утёк» от «клиента не видно»:\n%s", logBuf.String())
+		t.Errorf("имя клиента отсутствует в логах — тест не отличает «секрет не утёк» от «клиента не видно»:\n%s", logBuf.String())
 	}
 
 	// Контроль осмысленности: если ни один канал ничего не записал, тест

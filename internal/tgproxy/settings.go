@@ -1,7 +1,6 @@
 package tgproxy
 
 import (
-	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -34,8 +33,9 @@ const logExcludeNone = "none"
 
 // Settings — всё, что приложение читает из окружения.
 type Settings struct {
-	Handler Config
-	Addr    string
+	Handler    Config
+	Addr       string
+	ConfigFile string
 }
 
 // LoadSettings собирает конфигурацию из переменных окружения.
@@ -46,22 +46,9 @@ type Settings struct {
 // Любая проблема — ошибка, а не значение по умолчанию: сервис стоит на
 // публичном роуте, и подняться наполовину настроенным он не должен.
 func LoadSettings(getenv func(string) string) (*Settings, error) {
-	proxyRaw := getenv("LLM_PROXY_URL")
-	if proxyRaw == "" {
-		return nil, errors.New("LLM_PROXY_URL not set: without the platform proxy, Telegram is unreachable")
-	}
-	proxyURL, err := url.Parse(proxyRaw)
-	if err != nil {
-		return nil, fmt.Errorf("LLM_PROXY_URL: %w", err)
-	}
-	if proxyURL.Scheme == "" || proxyURL.Host == "" {
-		return nil, fmt.Errorf("LLM_PROXY_URL: need address with scheme and host, got %q", proxyRaw)
-	}
-
-	// Сообщения об ошибках ParseClients уже называют свою переменную.
-	clients, err := ParseClients(getenv("PROXY_CLIENTS"))
-	if err != nil {
-		return nil, err
+	configFile := getenv("CONFIG_FILE")
+	if configFile == "" {
+		configFile = "config.yaml"
 	}
 
 	upstream, err := url.Parse(telegramAPIBase)
@@ -75,8 +62,8 @@ func LoadSettings(getenv func(string) string) (*Settings, error) {
 		if err != nil {
 			return nil, fmt.Errorf("LONG_POLL_MAX_TIMEOUT: need an integer number of seconds, got %q", raw)
 		}
-		if n <= 0 {
-			return nil, fmt.Errorf("LONG_POLL_MAX_TIMEOUT: need a value greater than zero, got %d", n)
+		if n <= 0 || uint64(n) > uint64((time.Duration(1<<63-1))/time.Second) {
+			return nil, fmt.Errorf("LONG_POLL_MAX_TIMEOUT: need positive seconds representable as a duration, got %d", n)
 		}
 		longPoll = time.Duration(n) * time.Second
 	}
@@ -106,8 +93,8 @@ func LoadSettings(getenv func(string) string) (*Settings, error) {
 		if err != nil {
 			return nil, fmt.Errorf("PORT: need an integer, got %q", raw)
 		}
-		if n < minPort {
-			return nil, fmt.Errorf("PORT: need a value not less than %d (the process runs under an unprivileged UID), got %d", minPort, n)
+		if n < minPort || n > 65535 {
+			return nil, fmt.Errorf("PORT: need a value between %d and 65535, got %d", minPort, n)
 		}
 		port = n
 	}
@@ -115,11 +102,10 @@ func LoadSettings(getenv func(string) string) (*Settings, error) {
 	return &Settings{
 		Handler: Config{
 			Upstream:    upstream,
-			ProxyURL:    proxyURL,
-			Clients:     clients,
 			LongPollMax: longPoll,
 			LogFilter:   NewLogFilter(excluded),
 		},
-		Addr: fmt.Sprintf(":%d", port),
+		Addr:       fmt.Sprintf(":%d", port),
+		ConfigFile: configFile,
 	}, nil
 }

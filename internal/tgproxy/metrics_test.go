@@ -37,7 +37,7 @@ func collectMetrics(t *testing.T, reader *sdkmetric.ManualReader) map[string][]m
 // признаков {client, pathParsed, botDenied}.
 //
 // Часть комбинаций недостижима через реальный проход запроса по core (см.
-// proxy.go): client выставляется сразу после успешного Lookup, до разбора
+// proxy.go): client выставляется сразу после успешной проверки доступа, до разбора
 // пути в core, а botDenied — только после того, как ParseBotID внутри core
 // же и Client.Allows успели отработать. Поэтому botDenied=true при
 // pathParsed=false, а также botDenied=true или pathParsed=true при пустом
@@ -159,7 +159,7 @@ func TestRecordIgnoresLogFilter(t *testing.T) {
 	buf := &bytes.Buffer{}
 	logger := slog.New(slog.NewJSONHandler(buf, nil))
 	// client выставляется вручную, как это делает core в proxy.go
-	// после успешного Lookup: без этого methodLabel() увидел бы
+	// после успешной проверки доступа: без этого methodLabel() увидел бы
 	// анонимный запрос и вернул бы "" вместо реального имени метода.
 	h := Observe(logger, NewLogFilter([]string{"getUpdates"}), m, nooptrace.NewTracerProvider().Tracer("test"), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if info := infoFrom(r.Context()); info != nil {
@@ -215,7 +215,7 @@ func TestRecordUsesDeniedLabelNotBotID(t *testing.T) {
 	h := Observe(logger, nil, m, nooptrace.NewTracerProvider().Tracer("test"), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if info := infoFrom(r.Context()); info != nil {
 			// В реальном проходе по core (proxy.go) botDenied выставляется
-			// только после успешного Lookup — принадлежность бота
+			// только после успешной проверки доступа — принадлежность бота
 			// проверяется уже известному клиенту.
 			info.client = testClientName
 			info.botDenied = true

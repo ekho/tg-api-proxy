@@ -30,18 +30,9 @@ const maxUALen = 128
 // контекст унаследован от входящего, поэтому контекст доезжает, а обёртку
 // writer'а легко потерять, вставив между слоями ещё одну.
 type reqInfo struct {
-	// client — имя клиента, чей ключ предъявлен. Выставляется в core
-	// (proxy.go) сразу после успешного Lookup, до этого пусто.
-	//
-	// Отдельного флага «аутентифицирован» нет намеренно: непустое имя
-	// эквивалентно успешной проверке ключа, потому что появиться иначе как
-	// результатом удачного Lookup оно не может, а два поля об одном факте
-	// можно выставить несогласованно.
-	//
-	// Признак нужен потому, что иначе лейблы bot и method после 401 брались
-	// бы из пути и метода, которые разобраны до всех проверок и полностью
-	// подконтрольны анонимному клиенту, ключ не предъявившему.
-	client string
+	// client заполняется только после успешной проверки пары bot_id и IP.
+	client   string
+	clientIP string
 	// clamped — long poll оборван нашим дедлайном, а не Telegram.
 	clamped bool
 	// botDenied — бот отвергнут allowlist'ом. Отдельный флаг, а не вывод из
@@ -52,9 +43,8 @@ type reqInfo struct {
 	upstreamErr error
 }
 
-// authenticated сообщает, прошла ли проверка ключа. Обёртка над client
-// существует ради читаемости мест, которым важен только сам факт.
-func (i *reqInfo) authenticated() bool { return i.client != "" }
+// authorized guards telemetry labels until access has been granted.
+func (i *reqInfo) authorized() bool { return i.client != "" }
 
 type reqInfoKey struct{}
 
@@ -97,7 +87,7 @@ func newObsCtx(w http.ResponseWriter, path string) *obsCtx {
 
 // botUnknown и botDeniedLabel — значения лейбла bot, не являющиеся id.
 //
-// Лейбл обязан быть ограничен по кардинальности. Клиент с общим секретом мог бы
+// Лейбл обязан быть ограничен по кардинальности. Произвольный запрос мог бы
 // иначе выпускать сколько угодно значений, запрашивая случайные bot_id, поэтому
 // отвергнутый allowlist'ом бот скрывается за denied. В лог его id пишется как
 // есть: лог не является time series.
@@ -117,15 +107,10 @@ const clientUnknown = "unknown"
 // Признак отказа берётся из reqInfo, а не выводится из статуса 403: такой же
 // статус может прийти и от самого Telegram, и тогда лейбл соврал бы.
 //
-// Проверка authenticated идёт первой и безусловно: путь разбирается в
-// newObsCtx до аутентификации, поэтому pathParsed и botID уже известны даже
-// анонимному запросу. На 401 проверка allowlist не выполняется вовсе, и
-// botDenied остаётся false — без этой проверки анонимный клиент с общим
-// секретом, который он не предъявил, управлял бы лейблом произвольно, задавая
-// bot_id в пути.
+// До разрешения доступа значения из пути не становятся лейблами метрик.
 func (o *obsCtx) botLabel() string {
 	switch {
-	case !o.info.authenticated():
+	case !o.info.authorized():
 		return botUnknown
 	case !o.pathParsed:
 		return botUnknown
@@ -144,7 +129,7 @@ func (o *obsCtx) botLabel() string {
 // строка — тот же синтетический случай «метода нет», что уже используется
 // для tg.method и spanName при 401/400 с неразобранным путём.
 func (o *obsCtx) methodLabel() string {
-	if !o.info.authenticated() {
+	if !o.info.authorized() {
 		return ""
 	}
 	return o.method
@@ -154,9 +139,9 @@ func (o *obsCtx) methodLabel() string {
 //
 // В отличие от bot, защищать этот лейбл от произвольных значений не нужно: имя
 // не приходит из запроса, а берётся из конфигурации по результату удачного
-// Lookup, и потому ограничено по кардинальности само по себе.
+// проверки доступа, и потому ограничено по кардинальности само по себе.
 func (o *obsCtx) clientLabel() string {
-	if !o.info.authenticated() {
+	if !o.info.authorized() {
 		return clientUnknown
 	}
 	return o.info.client
@@ -331,7 +316,7 @@ func (o *obsCtx) baseLogAttrs(r *http.Request, status int) []any {
 	}
 	// Только после аутентификации: до неё имени нет, а пустое поле в каждой
 	// строке 401 засоряло бы лог.
-	if o.info.authenticated() {
+	if o.info.authorized() {
 		attrs = append(attrs, "client", o.info.client)
 	}
 	if o.method != "" {
@@ -389,20 +374,10 @@ func levelFor(status int, panicVal any) slog.Level {
 	}
 }
 
-// clientIP возвращает адрес клиента для диагностики.
-//
-// Значение берётся из X-Forwarded-For, потому что за nginx-ingress RemoteAddr —
-// это адрес пода ingress-контроллера. Доверять ему нельзя: при
-// use-forwarded-headers: true входящий заголовок дописывается, а не затирается,
-// и левое значение подделывается тривиально. Поэтому поле идёт только в лог, и
-// никаких решений — блокировок, лимитов, ветвлений — на нём не строится.
+// clientIP uses the exact address selected by access middleware.
 func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		first, _, found := strings.Cut(xff, ",")
-		if !found {
-			first = xff
-		}
-		return strings.TrimSpace(first)
+	if info := infoFrom(r.Context()); info != nil && info.clientIP != "" {
+		return info.clientIP
 	}
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host
@@ -446,7 +421,7 @@ const maxHeaderLen = 256
 //
 // Список намеренно шире того, что шлёт наш ingress: смысл диагностики в том,
 // чтобы увидеть в том числе заголовок, которого мы не ждали. Но он именно
-// список, а не «всё подряд»: через X-Proxy-Key приходит ключ клиента, и дамп
+// список, а не «всё подряд»: через Authorization могут приходить секреты, и дамп
 // всех значений вынес бы его в лог целиком.
 var addrHeaders = []string{
 	"X-Forwarded-For",

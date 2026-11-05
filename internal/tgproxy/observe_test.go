@@ -103,8 +103,8 @@ func TestObserveLogsSuccess(t *testing.T) {
 	if rec["bot_id"] != "123456" {
 		t.Errorf("bot_id = %v, want 123456", rec["bot_id"])
 	}
-	if rec["client_ip"] != "203.0.113.7" {
-		t.Errorf("client_ip = %v, want левое значение X-Forwarded-For", rec["client_ip"])
+	if rec["client_ip"] != "192.0.2.1" {
+		t.Errorf("client_ip = %v, want TCP peer without trusted IP middleware", rec["client_ip"])
 	}
 	if rec["ua"] != "python-telegram-bot/21.0" {
 		t.Errorf("ua = %v", rec["ua"])
@@ -339,7 +339,7 @@ func TestClientLabel(t *testing.T) {
 		want   string
 	}{
 		{name: "аноним", client: "", want: clientUnknown},
-		{name: "клиент известен", client: "codo", want: "codo"},
+		{name: "клиент известен", client: "service-a", want: "service-a"},
 		{name: "имя с дефисом", client: "vacancy-bot", want: "vacancy-bot"},
 	}
 
@@ -409,8 +409,8 @@ func TestForwardedChainLoggedWhenChainHasHops(t *testing.T) {
 	if got := rec["forwarded_chain"]; got != "203.0.113.7, 100.125.24.19" {
 		t.Errorf("forwarded_chain = %v, want всю цепочку целиком", got)
 	}
-	if got := rec["client_ip"]; got != "203.0.113.7" {
-		t.Errorf("client_ip = %v, want левое значение — семантика поля не меняется", got)
+	if got := rec["client_ip"]; got != "192.0.2.1" {
+		t.Errorf("client_ip = %v, want TCP peer without trusted IP middleware", got)
 	}
 }
 
@@ -462,7 +462,7 @@ func TestEdgeDiagnosticNeverLogsSecretHeaderValues(t *testing.T) {
 	h, buf := observeFixture(nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
 	req := httptest.NewRequest(http.MethodGet, "/bot"+tok+"/getMe", nil)
-	req.Header.Set(HeaderProxyKey, secret)
+
 	req.Header.Set("Authorization", "Bearer "+secret)
 	h.ServeHTTP(httptest.NewRecorder(), req)
 
@@ -480,7 +480,7 @@ func TestEdgeDiagnosticNeverLogsSecretHeaderValues(t *testing.T) {
 	if diag == nil {
 		t.Fatal("диагностика не записана")
 	}
-	if names, _ := diag["headers"].(string); !strings.Contains(names, HeaderProxyKey) {
-		t.Errorf("headers = %q, want перечисление имён включая %s", names, HeaderProxyKey)
+	if names, _ := diag["headers"].(string); !strings.Contains(names, "Authorization") {
+		t.Errorf("headers = %q, want перечисление имён включая %s", names, "Authorization")
 	}
 }

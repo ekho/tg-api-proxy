@@ -17,19 +17,9 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
-// TestAnonymousRequestsCollapseCardinality — регрессия: newObsCtx разбирал
-// путь до всех проверок, а botLabel отдавал сырой bot_id всякий раз, когда
-// pathParsed && !botDenied. На 401 проверка allowlist вообще не выполняется,
-// поэтому botDenied оставался false, и лейбл метрики полностью управлялся
-// анонимным клиентом. То же с именем метода: methodNameRe ограничивает его
-// форму (~26^32 вариантов), а не количество.
-//
-// SDK метрик держит запись на каждый набор атрибутов всё время жизни
-// процесса при лимите контейнера 256Mi — без аутентификации это удалённое
-// исчерпание памяти, доступное без единого валидного секрета, плюс
-// засорение платформенного Prometheus и списка трейсов именами спанов.
+// Denied callers must not create unbounded telemetry labels from URL paths.
 func TestAnonymousRequestsCollapseCardinality(t *testing.T) {
-	const secret = "0123456789abcdef0123456789abcdef"
+
 	// Апстрим не должен получить ни одного запроса: все 25 обязаны отсеяться
 	// на аутентификации.
 	upstreamURL, err := url.Parse("http://127.0.0.1:1")
@@ -49,7 +39,7 @@ func TestAnonymousRequestsCollapseCardinality(t *testing.T) {
 
 	handler, err := NewHandler(Config{
 		Upstream:       upstreamURL,
-		Clients:        testClientsFor(t, secret),
+		Access:         testAccess(t, defaultAccessFixture),
 		Logger:         slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		MeterProvider:  mp,
 		TracerProvider: tp,
@@ -64,16 +54,16 @@ func TestAnonymousRequestsCollapseCardinality(t *testing.T) {
 		// "9"), метод — тоже разный и валидной формы (только буквы, как
 		// того требует methodNameRe: цифры в имя метода класть нельзя).
 		// Секрет один и тот же: его значение не участвует в лейблах и не
-		// проходит проверку X-Proxy-Key, которую мы сознательно не ставим.
+		// неизвестный bot_id не проходит проверку доступа.
 		path := fmt.Sprintf("/bot9%06d:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw/method%c", i, 'a'+i)
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
 
 		handler.ServeHTTP(rec, req)
 
-		if rec.Code != http.StatusUnauthorized {
-			t.Fatalf("запрос %d: код = %d, want %d (без X-Proxy-Key прокси обязан отвергать все запросы)",
-				i, rec.Code, http.StatusUnauthorized)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("запрос %d: код = %d, want %d (без разрешённого bot_id прокси обязан отвергать все запросы)",
+				i, rec.Code, http.StatusForbidden)
 		}
 	}
 

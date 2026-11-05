@@ -1,0 +1,9 @@
+.git
+.github
+.superpowers
+.env
+.env.*
+config.yaml
+tg-api-proxy
+*.log
+.DS_Store

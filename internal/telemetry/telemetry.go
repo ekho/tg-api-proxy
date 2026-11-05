@@ -27,7 +27,7 @@ import (
 // ShutdownTimeout — предел на сброс буферов экспортёров при остановке.
 //
 // Складывается с 60 с graceful shutdown сервера и обязан оставаться внутри
-// terminationGracePeriodSeconds: 75 из k8s/deployment.yaml.
+// stop_grace_period в compose.yaml.
 const ShutdownTimeout = 5 * time.Second
 
 // DurationBuckets — границы гистограммы длительности запроса, в секундах.
@@ -46,9 +46,7 @@ func noop(context.Context) error { return nil }
 // Setup поднимает провайдеры трейсов и метрик и регистрирует их глобально.
 //
 // Адрес коллектора, имя сервиса и протокол берутся из стандартных переменных
-// OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_SERVICE_NAME и OTEL_EXPORTER_OTLP_PROTOCOL,
-// которые уже заданы в k8s/deployment.yaml, поэтому своих переменных пакет не
-// вводит.
+// OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_SERVICE_NAME и OTEL_EXPORTER_OTLP_PROTOCOL.
 //
 // Fail-open: любая ошибка означает предупреждение и no-op провайдеры, а не
 // остановку сервиса. Остальная конфигурация проекта fail-closed, потому что
@@ -86,7 +84,7 @@ func Setup(ctx context.Context, logger *slog.Logger) ShutdownFunc {
 	// Одного url.Parse недостаточно: он почти ничего не отсеивает — строку вида
 	// "не url вообще" разбирает как относительный путь и не возвращает ошибку,
 	// ловит только битое percent-кодирование. Поэтому дополнительно требуем
-	// непустые схему и хост, как для LLM_PROXY_URL в internal/tgproxy/settings.go.
+	// непустые схему и хост.
 	if endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); endpoint != "" {
 		u, err := url.Parse(endpoint)
 		if err != nil {

@@ -11,7 +11,10 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strconv"
+	"sync/atomic"
 	"time"
+
+	"github.com/go-chi/chi/v5/middleware"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -26,19 +29,15 @@ const HeaderClampedTimeout = "X-Proxy-Clamped-Timeout"
 // обновлений. Прокси синтезирует его при срабатывании дедлайна.
 const emptyUpdates = `{"ok":true,"result":[]}`
 
-// defaultLongPollMax — потолок длительности getUpdates. Ниже ~60 с, которые
-// платформенный ingress держит по умолчанию и которыми мы не управляем.
+// defaultLongPollMax — потолок getUpdates; reverse proxy должен ждать дольше.
 const defaultLongPollMax = 45 * time.Second
 
 // Config — зависимости обработчика.
 type Config struct {
 	// Upstream — база Bot API (https://api.telegram.org).
 	Upstream *url.URL
-	// ProxyURL — платформенный CONNECT-прокси (LLM_PROXY_URL). nil = напрямую.
-	ProxyURL *url.URL
-	// Clients — потребители прокси: ключ каждого и боты, которыми ему можно
-	// ходить.
-	Clients *Clients
+	// Access is the atomically published, validated client and proxy policy.
+	Access *atomic.Pointer[AccessConfig]
 	// LongPollMax — дедлайн для getUpdates.
 	LongPollMax time.Duration
 	// LogFilter решает, какие запросы попадают в access-лог.
@@ -59,8 +58,8 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	if cfg.Upstream == nil {
 		return nil, errors.New("Config.Upstream not set")
 	}
-	if cfg.Clients == nil {
-		return nil, errors.New("Config.Clients not set")
+	if cfg.Access == nil || cfg.Access.Load() == nil || cfg.Access.Load().withClientIP == nil {
+		return nil, errors.New("Config.Access has no validated policy")
 	}
 	if cfg.LongPollMax <= 0 {
 		cfg.LongPollMax = defaultLongPollMax
@@ -71,6 +70,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	}
 
 	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
@@ -81,9 +81,6 @@ func NewHandler(cfg Config) (http.Handler, error) {
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
 		ForceAttemptHTTP2:     true,
-	}
-	if cfg.ProxyURL != nil {
-		transport.Proxy = http.ProxyURL(cfg.ProxyURL)
 	}
 
 	meterProvider := cfg.MeterProvider
@@ -118,9 +115,6 @@ func NewHandler(cfg Config) (http.Handler, error) {
 			// Host: tg-api-proxy.<домен> и ответил ошибкой, при этом TLS-соединение
 			// выглядело бы исправным — SNI берётся из URL.Host.
 			pr.Out.Host = cfg.Upstream.Host
-			// Общий секрет — наш, а не Telegram. ReverseProxy вычищает только
-			// hop-by-hop заголовки, поэтому убираем явно.
-			pr.Out.Header.Del(HeaderProxyKey)
 			// SetXForwarded намеренно не вызывается: адреса наших потребителей
 			// третьей стороне не нужны.
 		},
@@ -152,56 +146,43 @@ func NewHandler(cfg Config) (http.Handler, error) {
 		},
 	}
 
-	// Ядро: аутентификация, разбор пути, allowlist, проксирование. Логов здесь
-	// нет намеренно — единственное место, где рождается строка лога, метрика и
-	// спан, это Observe. Иначе добавление новой ветви молча выпадало бы из
-	// наблюдаемости, как это произошло с 401.
+	// One policy snapshot governs both proxy trust and client authorization.
 	core := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		client := cfg.Clients.Lookup(r.Header.Get(HeaderProxyKey))
-		if client == nil {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		// Отсюда и далее bot_id и method в пути предъявлены владельцем ключа, а
-		// не анонимом: только с этого момента их не опасно класть в лейблы
-		// метрики и атрибуты спана с ограниченной кардинальностью. Имя клиента
-		// заодно служит признаком того, что аутентификация прошла — отдельного
-		// флага для этого нет (см. reqInfo в observe.go).
-		if info := infoFrom(r.Context()); info != nil {
-			info.client = client.Name
-		}
-
-		botID, ok := ParseBotID(r.URL.Path)
-		if !ok {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		// Отказ теперь означает «бот не принадлежит ЭТОМУ клиенту», а не «бота
-		// нет в общем списке». Код тот же: клиенту в обоих случаях нельзя.
-		if !client.Allows(botID) {
+		policy := cfg.Access.Load()
+		policy.withClientIP(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ip := middleware.GetClientIPAddr(r.Context())
 			if info := infoFrom(r.Context()); info != nil {
-				info.botDenied = true
+				info.clientIP = "unknown"
+				if ip.IsValid() {
+					info.clientIP = ip.String()
+				}
 			}
-			w.WriteHeader(http.StatusForbidden)
-			return
-		}
-
-		if IsLongPoll(r.URL.Path) {
-			ctx, cancel := context.WithTimeout(r.Context(), cfg.LongPollMax)
-			defer cancel()
-			r = r.WithContext(ctx)
-		}
-
-		rp.ServeHTTP(w, r)
+			botID, ok := ParseBotID(r.URL.Path)
+			if !ok {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			client := policy.Authorize(botID, ip)
+			if client == nil {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			if info := infoFrom(r.Context()); info != nil {
+				info.client = client.Name
+			}
+			if IsLongPoll(r.URL.Path) {
+				ctx, cancel := context.WithTimeout(r.Context(), cfg.LongPollMax)
+				defer cancel()
+				r = r.WithContext(ctx)
+			}
+			rp.ServeHTTP(w, r)
+		})).ServeHTTP(w, r)
 	})
 
 	observed := Observe(logger, cfg.LogFilter, requestMetrics, tracer, core)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Пробы kubelet приходят без заголовков, поэтому /healthz обрабатывается
-		// до аутентификации. Иначе под никогда не стал бы ready. Заодно пробы
-		// остаются снаружи наблюдаемости: их около 18 в минуту против примерно
-		// 3 запросов реального трафика.
+		// Liveness не проксирует трафик и не требует клиентских IP-правил.
 		if r.URL.Path == "/healthz" {
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, "ok\n")

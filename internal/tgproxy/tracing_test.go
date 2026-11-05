@@ -32,7 +32,7 @@ func traceFixture(t *testing.T, next http.Handler) (http.Handler, *tracetest.InM
 
 func TestSpanNamedByMethod(t *testing.T) {
 	// client выставляется вручную, как это делает core в proxy.go
-	// после успешного Lookup: без этого имя спана определялось бы
+	// после успешной проверки доступа: без этого имя спана определялось бы
 	// methodLabel()="" и свелось бы к синтетическому "unknown".
 	h, exp := traceFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if info := infoFrom(r.Context()); info != nil {

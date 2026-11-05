@@ -14,7 +14,7 @@ func TestUpstreamFailureReturnsTelegramShapedError(t *testing.T) {
 	h := newTestHandler(t, "http://127.0.0.1:1", time.Second)
 
 	req := httptest.NewRequest(http.MethodPost, "/bot"+testToken+"/sendMessage", nil)
-	req.Header.Set(HeaderProxyKey, testSecret)
+
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 

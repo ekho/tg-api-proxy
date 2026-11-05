@@ -14,26 +14,14 @@ import (
 )
 
 const (
-	testSecret     = "3f8a1c9e5b7d2f4a6c8e0b1d3f5a7c9e"
 	testBotID      = "123456"
 	testToken      = "123456:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"
-	testClientName = "codo"
+	testClientName = "service-a"
 )
 
-// testClientsFor собирает список из одного клиента testClientName с заданным
-// ключом и единственным ботом testBotID.
-//
-// Живёт здесь, а не в каждом тесте: шесть файлов поднимают NewHandler, и до
-// перехода на Clients каждый повторял одни и те же восемь строк сборки
-// зависимостей аутентификации.
-func testClientsFor(t *testing.T, key string) *Clients {
-	t.Helper()
-	c, err := ParseClients(testClientName + fieldSep + key + fieldSep + testBotID)
-	if err != nil {
-		t.Fatalf("ParseClients: %v", err)
-	}
-	return c
-}
+const defaultAccessFixture = `clients:
+ - {name: service-a, bot_ids: ['123456'], allowed_ips: ['192.0.2.1', '127.0.0.1', '::1']}
+`
 
 // recordedRequest хранит то, что реально доехало до апстрима.
 type recordedRequest struct {
@@ -69,7 +57,7 @@ func newTestHandler(t *testing.T, upstreamURL string, longPollMax time.Duration)
 	}
 	h, err := NewHandler(Config{
 		Upstream:    u,
-		Clients:     testClientsFor(t, testSecret),
+		Access:      testAccess(t, defaultAccessFixture),
 		LongPollMax: longPollMax,
 		// Ожидаемые ошибки апстрима не должны засорять вывод тестов.
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -83,7 +71,7 @@ func newTestHandler(t *testing.T, upstreamURL string, longPollMax time.Duration)
 func TestHealthzSkipsAuth(t *testing.T) {
 	h := newTestHandler(t, "http://127.0.0.1:1", time.Second)
 
-	// Без заголовка аутентификации — kubelet ходит на пробы без заголовков.
+	// Liveness доступен без клиентских IP-правил.
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -93,32 +81,16 @@ func TestHealthzSkipsAuth(t *testing.T) {
 	}
 }
 
-func TestRejectsBadAuth(t *testing.T) {
+func TestRejectsDisallowedIP(t *testing.T) {
 	h := newTestHandler(t, "http://127.0.0.1:1", time.Second)
-
-	tests := []struct {
-		name   string
-		key    string
-		setKey bool
-	}{
-		{name: "заголовок отсутствует", setKey: false},
-		{name: "пустой заголовок", key: "", setKey: true},
-		{name: "неверный секрет", key: "wrong-secret-value-000000000000", setKey: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/bot"+testToken+"/sendMessage", nil)
-			if tt.setKey {
-				req.Header.Set(HeaderProxyKey, tt.key)
-			}
-			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, req)
-
-			if rec.Code != http.StatusUnauthorized {
-				t.Errorf("код = %d, want %d", rec.Code, http.StatusUnauthorized)
-			}
-		})
+	req := httptest.NewRequest(http.MethodPost, "/bot"+testToken+"/sendMessage", nil)
+	req.RemoteAddr = "203.0.113.99:1234"
+	req.Header.Set("X-Proxy-Key", "obsolete-key")
+	req.Header.Set("X-Forwarded-For", "192.0.2.1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d want 403", rec.Code)
 	}
 }
 
@@ -126,7 +98,7 @@ func TestRejectsBotNotOwnedByClient(t *testing.T) {
 	h := newTestHandler(t, "http://127.0.0.1:1", time.Second)
 
 	req := httptest.NewRequest(http.MethodPost, "/bot999999:AAHdqTcvCH1vGWJxfSeofSAs/sendMessage", nil)
-	req.Header.Set(HeaderProxyKey, testSecret)
+
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -139,7 +111,7 @@ func TestRejectsNonBotAPIPath(t *testing.T) {
 	h := newTestHandler(t, "http://127.0.0.1:1", time.Second)
 
 	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
-	req.Header.Set(HeaderProxyKey, testSecret)
+
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -165,7 +137,7 @@ func TestForwardsRequestToUpstream(t *testing.T) {
 	path := "/bot" + testToken + "/sendMessage"
 	req := httptest.NewRequest(http.MethodPost, path+"?chat_id=1", strings.NewReader(`{"text":"hi"}`))
 	req.Host = "tg-api-proxy.example.com"
-	req.Header.Set(HeaderProxyKey, testSecret)
+
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -199,12 +171,6 @@ func TestForwardsRequestToUpstream(t *testing.T) {
 		}
 	})
 
-	t.Run("общий секрет не утекает в Telegram", func(t *testing.T) {
-		if v := got.headers.Get(HeaderProxyKey); v != "" {
-			t.Errorf("%s дошёл до апстрима со значением %q — секрет утёк", HeaderProxyKey, v)
-		}
-	})
-
 	t.Run("статус и заголовки ответа возвращаются как есть", func(t *testing.T) {
 		if rec.Code != http.StatusTeapot {
 			t.Errorf("код = %d, want %d", rec.Code, http.StatusTeapot)
@@ -233,7 +199,7 @@ func TestLongPollDeadlineReturnsEmptyResult(t *testing.T) {
 	h := newTestHandler(t, upstream.URL, 150*time.Millisecond)
 
 	req := httptest.NewRequest(http.MethodGet, "/bot"+testToken+"/getUpdates?timeout=50", nil)
-	req.Header.Set(HeaderProxyKey, testSecret)
+
 	rec := httptest.NewRecorder()
 
 	start := time.Now()
@@ -277,7 +243,7 @@ func TestNonLongPollIsNotDeadlined(t *testing.T) {
 	h := newTestHandler(t, upstream.URL, 50*time.Millisecond)
 
 	req := httptest.NewRequest(http.MethodPost, "/bot"+testToken+"/sendMessage", nil)
-	req.Header.Set(HeaderProxyKey, testSecret)
+
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -295,69 +261,34 @@ func TestNonLongPollIsNotDeadlined(t *testing.T) {
 // Проверяются обе стороны, а не одна: тест, утверждающий только «свой бот
 // проходит», остался бы зелёным, если Allows начнёт возвращать true всегда.
 func TestClientIsolation(t *testing.T) {
-	const (
-		codoBot    = "111111"
-		vacancyBot = "222222"
-		codoKeyE2E = "1111111111111111aaaaaaaaaaaaaaaa"
-		vacKeyE2E  = "2222222222222222bbbbbbbbbbbbbbbb"
-		legKeyE2E  = "3333333333333333cccccccccccccccc"
-	)
-
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{"ok":true}`) }))
 	defer upstream.Close()
-
-	u, err := url.Parse(upstream.URL)
+	u, _ := url.Parse(upstream.URL)
+	policy := `clients:
+ - {name: service-a, bot_ids: ['111111'], allowed_ips: ['192.0.2.1']}
+ - {name: service-b, bot_ids: ['222222'], allowed_ips: ['198.51.100.1']}
+ - {name: shared, bot_ids: ['111111','222222'], allowed_ips: ['203.0.113.1']}
+`
+	h, err := NewHandler(Config{Upstream: u, Access: testAccess(t, policy), Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
-		t.Fatalf("разбор адреса апстрима: %v", err)
+		t.Fatal(err)
 	}
-
-	// legacy владеет обоими ботами — так выглядит переходный период.
-	clients, err := ParseClients(
-		"codo:" + codoKeyE2E + ":" + codoBot + ";" +
-			"vacancy-bot:" + vacKeyE2E + ":" + vacancyBot + ";" +
-			"legacy:" + legKeyE2E + ":" + codoBot + "," + vacancyBot)
-	if err != nil {
-		t.Fatalf("ParseClients: %v", err)
-	}
-
-	h, err := NewHandler(Config{
-		Upstream: u,
-		Clients:  clients,
-		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
-	if err != nil {
-		t.Fatalf("создание обработчика: %v", err)
-	}
-
-	tests := []struct {
-		name  string
-		key   string
-		botID string
-		want  int
+	for _, tt := range []struct {
+		ip, bot string
+		want    int
 	}{
-		{name: "свой бот", key: codoKeyE2E, botID: codoBot, want: http.StatusOK},
-		{name: "бот другого клиента", key: codoKeyE2E, botID: vacancyBot, want: http.StatusForbidden},
-		{name: "свой бот у второго клиента", key: vacKeyE2E, botID: vacancyBot, want: http.StatusOK},
-		{name: "бот первого клиента у второго", key: vacKeyE2E, botID: codoBot, want: http.StatusForbidden},
-		{name: "legacy и первый бот", key: legKeyE2E, botID: codoBot, want: http.StatusOK},
-		{name: "legacy и второй бот", key: legKeyE2E, botID: vacancyBot, want: http.StatusOK},
-		{name: "неизвестный ключ", key: "0000000000000000ffffffffffffffff", botID: codoBot, want: http.StatusUnauthorized},
-		{name: "пустой ключ", key: "", botID: codoBot, want: http.StatusUnauthorized},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/bot"+tt.botID+":AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw/getMe", nil)
-			req.Header.Set(HeaderProxyKey, tt.key)
-			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, req)
-
-			if rec.Code != tt.want {
-				t.Errorf("статус = %d, want %d", rec.Code, tt.want)
-			}
-		})
+		{"192.0.2.1", "111111", 200}, {"192.0.2.1", "222222", 403},
+		{"198.51.100.1", "222222", 200}, {"198.51.100.1", "111111", 403},
+		{"203.0.113.1", "111111", 200}, {"203.0.113.1", "222222", 200},
+		{"203.0.113.99", "111111", 403},
+	} {
+		req := httptest.NewRequest("GET", "/bot"+tt.bot+":SYNTHETIC/getMe", nil)
+		req.RemoteAddr = tt.ip + ":1234"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != tt.want {
+			t.Fatalf("%s/%s: %d want %d", tt.ip, tt.bot, rec.Code, tt.want)
+		}
 	}
 }
 
@@ -367,7 +298,7 @@ func TestUnparseablePathStillBadRequest(t *testing.T) {
 	h := newTestHandler(t, "http://127.0.0.1:1", time.Second)
 
 	req := httptest.NewRequest(http.MethodGet, "/nonsense/getMe", nil)
-	req.Header.Set(HeaderProxyKey, testSecret)
+
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 

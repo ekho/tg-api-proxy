@@ -46,14 +46,13 @@ func TestSpansNestedAndFreeOfPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("разбор адреса апстрима: %v", err)
 	}
-	const secret = "0123456789abcdef0123456789abcdef"
 
 	exporter := tracetest.NewInMemoryExporter()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 
 	handler, err := NewHandler(Config{
 		Upstream:       upstreamURL,
-		Clients:        testClientsFor(t, secret),
+		Access:         testAccess(t, defaultAccessFixture),
 		LongPollMax:    45 * time.Second,
 		LogFilter:      NewLogFilter(nil),
 		Logger:         slog.New(slog.NewJSONHandler(io.Discard, nil)),
@@ -64,7 +63,7 @@ func TestSpansNestedAndFreeOfPath(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/bot123456:"+e2eSecret+"/getMe", nil)
-	req.Header.Set(HeaderProxyKey, secret)
+
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	spans := exporter.GetSpans()
