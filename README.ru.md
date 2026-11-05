@@ -1,78 +1,27 @@
 # tg-api-proxy
 
-[English](README.md)
+[English](README.md) | [Подробная документация](docs/guide.ru.md)
 
 Прозрачный Go-прокси Telegram Bot API с доступом по IP для каждого клиента.
 Поддерживает обычные вызовы, передачу файлов и long polling. Клиент меняет только
 базовый URL API; дополнительный ключ или заголовок авторизации не нужен.
 Токены ботов проходят в URL как у Telegram, не сохраняются и скрываются в логах.
 
-## Запуск через Docker Compose
+## Настройка и запуск
+
+Используется `ghcr.io/ekho/tg-api-proxy:latest`. Скопируйте и заполните конфигурацию:
 
 ```sh
 cp config.example.yaml config.yaml
-# Укажите своих клиентов, bot_id, разрешённые IP и адреса доверенных прокси.
-docker compose pull
-docker compose up -d
-docker compose logs -f tg-api-proxy
 ```
 
-`config.yaml` обязателен и не включается в Git или образ. Пример содержит
-синтетические bot_id и адреса из сетей для документации: замените их перед запуском.
-Некорректная начальная конфигурация не позволит сервису запуститься.
-
-Compose передаёт файл стандартным механизмом `configs`:
+Пример `config.yaml`; замените идентификатор бота и адреса своими:
 
 ```yaml
-services:
-  tg-api-proxy:
-    configs:
-      - source: proxy_config
-        target: /config/config.yaml
-configs:
-  proxy_config:
-    file: ./config.yaml
-```
-
-По умолчанию HTTP-порт опубликован только на `127.0.0.1:8080`. Перед ним должен
-работать ваш reverse proxy с HTTPS. Контейнер работает без root, с файловой
-системой и конфигурацией только для чтения.
-
-## Готовые образы
-
-GitHub Actions собирает и публикует `ghcr.io/ekho/tg-api-proxy` после успешных
-проверок CI. Образы поддерживают `linux/amd64` и `linux/arm64`.
-
-| Событие | Теги образа |
-|---|---|
-| Push в `main` | `latest`, `sha-<полный SHA коммита>` |
-| Push Git-тега `v*`, например `v1.2.3` | `v1.2.3`, `sha-<полный SHA коммита>` |
-| Ручной запуск (`workflow_dispatch`) | SHA-тег; `latest` только при запуске из `main` |
-
-Pull request запускает проверки без публикации. Версионные теги не обновляют
-`latest`. Задача публикации использует встроенный `GITHUB_TOKEN` с правом
-`packages: write`; дополнительный секрет репозитория не нужен. Docker Actions
-закреплены на точных SHA коммитов. Образ появится в реестре только после успешного
-запуска workflow на GitHub.
-
-`compose.yaml` по умолчанию использует `ghcr.io/ekho/tg-api-proxy:latest`.
-Перед `docker compose up -d` выполните `docker compose pull`, чтобы скачать
-актуальный образ. Для выбора конкретной ревизии измените тег образа в Compose
-на версионный или SHA-тег. Если пакет закрытый, перед скачиванием войдите в GHCR
-через Docker. Первый образ появится только после успешного workflow публикации.
-
-Для локальной сборки контейнера выполните `docker build -t tg-api-proxy:dev .`
-и укажите в Compose `image: tg-api-proxy:dev`. Остальные настройки и `configs`
-оставьте без изменений.
-
-## Правила клиентов
-
-```yaml
-trusted_proxies:
-  - "172.30.0.10"
+trusted_proxies: ["172.30.0.10"]
 clients:
   - name: service-a
-    bot_ids: ["123456", "654321"]
+    bot_ids: ["123456"]
     allowed_ips:
       - "203.0.113.10"
       - "198.51.100.0/24"
@@ -80,147 +29,76 @@ clients:
       - "2001:db8::/48"
 ```
 
-- `name`: уникальное имя из латинских букв, цифр, `_` и `-`; используется в логах,
-  метриках и трассировках.
-- `bot_ids`: непустой список числовых идентификаторов — части токена до `:`.
-  Секретную часть токена в конфигурацию добавлять не нужно.
-- `allowed_ips`: непустой список IP-адресов, подсетей CIDR и включительных диапазонов
-  `начало-конец`. Поддерживаются IPv4 и IPv6, одиночные записи и любые их сочетания.
-- `trusted_proxies`: адреса, подсети или диапазоны доверенных промежуточных прокси.
-  Пустой или отсутствующий список означает, что forwarding-заголовки игнорируются.
-
-Запрос разрешён, только если его `bot_id` и исходный IP совпали с правилами ровно
-одного клиента. Один бот может встречаться у разных клиентов с разными IP. Если
-конкретный запрос подходит нескольким клиентам, он получает `403`.
-Неподходящий IP или бот тоже получает `403`, неправильный путь API — `400`.
-`GET /healthz` доступен без IP-проверки и возвращает `200`; трафик в Telegram он не
-пересылает.
-
-Неизвестные поля YAML, повторяющиеся имена, пустые обязательные списки и неверные
-IP считаются ошибкой. IPv6 с идентификатором интерфейса (`%eth0`) не поддерживается.
-Для IPv4-подсетей используйте обычную запись `192.0.2.0/24`, а не mapped IPv6.
-Mapped IPv4 в адресе соединения (`::ffff:192.0.2.10`) сопоставляется с обычным IPv4.
-
-## Автоматическое перечитывание
-
-Сервис проверяет содержимое файла раз в секунду. Новая версия сначала целиком
-разбирается и проверяется, затем одновременно заменяет все правила клиентов и
-доверенных прокси. Перезапуск процесса для этого не требуется.
-
-При ошибке чтения, YAML или правил сервис пишет ошибку в JSON-лог и продолжает
-использовать **последнюю корректную конфигурацию**. Неизменившаяся ошибочная версия
-не засоряет лог сообщениями каждую секунду. После исправления файл проверяется
-снова. Успешное применение отмечается сообщением `config applied`.
-Уже допущенные запросы завершаются по прежним правилам; новые проверяются по новым.
-
-**Особенность `configs.file` в обычном Docker Compose:** это монтирование отдельного
-файла. Обновление содержимого существующего файла видно контейнеру. Некоторые
-редакторы сохраняют через создание нового файла и `rename`; тогда контейнер может
-продолжить читать старый файл. Сервис не может увидеть содержимое, которое Docker
-ему не предоставляет. Используйте сохранение без замены файла либо после такой
-замены пересоздайте контейнер:
+В `trusted_proxies` нужен фактический адрес, с которого приложение видит reverse
+proxy. Для Nginx на хосте это может быть шлюз Docker, для Traefik — его адрес
+в общей Docker-сети. В логе первого запроса адрес виден в поле `remote_addr`.
 
 ```sh
-docker compose up -d --force-recreate tg-api-proxy
+docker compose pull
+docker compose up -d
+docker compose logs -f tg-api-proxy
 ```
 
-Обычный `restart` не гарантирует обновления монтирования. Это ограничение
-[одиночных файловых bind mounts](https://github.com/moby/moby/issues/6011),
-а атомарное применение проверенной конфигурации внутри сервиса сохраняется.
-При записи файла по частям наблюдатель может увидеть промежуточное содержимое:
-невалидная версия будет отклонена, следующая корректная — применена.
+В клиенте бота укажите базовый адрес API `https://proxy.example.com`; пути остаются
+`/bot<TOKEN>/<method>` и `/file/bot<TOKEN>/<file_path>`.
 
-## Настройка reverse proxy
+## Пример Nginx
 
-Заголовок `X-Forwarded-For` учитывается **только от доверенного TCP-соседа**.
-Готовый middleware Chi проходит цепочку справа налево и пропускает явно доверенные
-адреса. Первый недоверенный адрес становится адресом клиента. Ошибка в проверяемой
-части цепочки или отсутствие определимого клиента приводят к отказу; значения
-левее найденного клиента ничего не переопределяют. `X-Real-IP` и прочие заголовки
-не предоставляют доступ.
-
-Для Nginx, который сам принимает внешние соединения и завершает TLS:
+Для Nginx на хосте Docker. Замените домен и пути к TLS-сертификату и ключу:
 
 ```nginx
-location / {
-    proxy_pass http://127.0.0.1:8080;
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $remote_addr;
-    proxy_buffering off;
-    proxy_request_buffering off;
-    proxy_read_timeout 75s;
+server {
+    listen 443 ssl;
+    server_name proxy.example.com;
+    ssl_certificate /etc/nginx/certs/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/privkey.pem;
+    client_max_body_size 256m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 75s;
+    }
 }
 ```
 
-В `trusted_proxies` укажите адрес, с которого приложение действительно видит
-соединение Nginx. При публикации Docker-порта это может быть адрес шлюза Docker,
-а не `127.0.0.1`. В стартовой диагностике первого запроса поле `remote_addr`
-показывает TCP-соседа. Не доверяйте всем частным сетям: указывайте точные адреса
-прокси или выделенную подсеть.
-
-Если Nginx/Traefik работает контейнером, присоедините сервис к общей Docker-сети
-и уберите `ports` из Compose. Reverse proxy обращается к `http://tg-api-proxy:8080`,
-а в `trusted_proxies` указывается его адрес в этой сети. Сам reverse proxy должен
-заменять входящий `X-Forwarded-For` либо корректно добавлять адрес своего соседа.
-
-## Использование клиентом
-
-Обычный вызов: `https://proxy.example.com/bot<TOKEN>/<method>`.
-Скачивание файла: `https://proxy.example.com/file/bot<TOKEN>/<file_path>`.
-
-Для `python-telegram-bot`:
-
-```python
-app = (
-    ApplicationBuilder()
-    .token(TOKEN)
-    .base_url("https://proxy.example.com/bot")
-    .base_file_url("https://proxy.example.com/file/bot")
-    .build()
-)
+```sh
+sudo nginx -t
+sudo nginx -s reload
 ```
 
-`getUpdates` ограничен 45 секундами по умолчанию. При достижении своего дедлайна
-прокси возвращает `{"ok":true,"result":[]}` с заголовком `X-Proxy-Clamped-Timeout`.
-Остальные запросы и файлы передаются потоком без этого дедлайна.
+## Пример Traefik
 
-## Настройки процесса и наблюдаемость
+Для существующего Traefik с Docker provider, общей сетью `proxy`, HTTPS-точкой
+входа `websecure` и механизмом получения сертификатов `letsencrypt`. Сохраните
+в файл `compose.traefik.yaml` и замените домен:
 
-Необязательный `.env` для Compose можно создать из `.env.example`. Настройки
-окружения требуют пересоздания контейнера; автоматически обновляется только YAML
-с клиентами и доверенными прокси.
+```yaml
+services:
+  tg-api-proxy:
+    ports: !reset []
+    networks: [proxy]
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: proxy
+      traefik.http.routers.tg-api-proxy.rule: Host(`proxy.example.com`)
+      traefik.http.routers.tg-api-proxy.entrypoints: websecure
+      traefik.http.routers.tg-api-proxy.tls: "true"
+      traefik.http.routers.tg-api-proxy.tls.certresolver: letsencrypt
+      traefik.http.routers.tg-api-proxy.service: tg-api-proxy
+      traefik.http.services.tg-api-proxy.loadbalancer.server.port: "8080"
 
-| Переменная | По умолчанию | Назначение |
-|---|---|---|
-| `CONFIG_FILE` | `config.yaml` | Путь файла при нативном запуске; в Compose `/config/config.yaml` |
-| `PORT` | `8080` | Внутренний HTTP-порт, от 1024 до 65535 |
-| `PROXY_PORT` | `8080` | Публикуемый порт Compose на localhost |
-| `LONG_POLL_MAX_TIMEOUT` | `45` | Дедлайн `getUpdates`, секунды |
-| `LOG_EXCLUDE_METHODS` | `getUpdates` | Успешные вызовы каких методов не писать в access-лог; `none` — писать все |
-| `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` | пусто | Стандартные настройки исходящих соединений |
-| `OTEL_SDK_DISABLED` | `true` в Compose | Выключить экспорт метрик и трассировок |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | пусто | HTTP-адрес OTLP-коллектора при включённом экспорте |
-| `OTEL_RESOURCE_ATTRIBUTES` | пусто | Дополнительные атрибуты ресурса OpenTelemetry |
-
-Access-логи пишутся в stdout в JSON, ошибки `4xx`/`5xx` логируются независимо от
-фильтра методов. Метрики и трассировки также не зависят от этого фильтра.
-Для OpenTelemetry задайте `OTEL_SDK_DISABLED=false` и адрес своего коллектора;
-Compose использует OTLP HTTP/protobuf. Недоступность коллектора не останавливает
-прокси. Без исходящего прокси соединения с Telegram идут напрямую.
-
-Адреса и подсети разбирает стандартный `net/netip`, диапазоны и наборы —
-`go4.org/netipx`, YAML — `goccy/go-yaml`, доверенную цепочку — middleware Chi.
-Собственная прикладная логика ограничена правилами клиентов и безопасным применением
-обновлений файла.
-
-## Разработка
+networks:
+  proxy:
+    external: true
+    name: proxy
+```
 
 ```sh
-go test -race ./... -count=1
-go vet ./...
-go build ./...
-OTEL_SDK_DISABLED=true CONFIG_FILE=config.yaml go run .
+docker compose -f compose.yaml -f compose.traefik.yaml pull
+docker compose -f compose.yaml -f compose.traefik.yaml up -d
 ```
-
-Приложение не читает `.env` самостоятельно. В тестах используются локальные
-HTTP-серверы; реальные токены и обращения к Telegram не требуются.
