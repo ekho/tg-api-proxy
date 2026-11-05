@@ -1,24 +1,27 @@
 # tg-api-proxy
 
-Прозрачный Go-прокси Telegram Bot API с доступом по IP для каждого клиента.
-Поддерживает обычные вызовы, передачу файлов и long polling. Клиент меняет только
-базовый URL API; дополнительный ключ или заголовок авторизации не нужен.
-Токены ботов проходят в URL как у Telegram, не сохраняются и скрываются в логах.
+[Русский](README.ru.md)
 
-## Запуск через Docker Compose
+A transparent Telegram Bot API proxy in Go with per-client IP access rules.
+Supports regular API calls, file transfers, and long polling. Clients only change
+the API base URL; no additional proxy key or authentication header is required.
+Bot tokens are passed in the URL as with Telegram; they are not stored and are
+redacted in logs.
+
+## Running with Docker Compose
 
 ```sh
 cp config.example.yaml config.yaml
-# Укажите своих клиентов, bot_id, разрешённые IP и адреса доверенных прокси.
+# Set your clients, bot IDs, allowed IPs, and trusted proxy addresses.
 docker compose up -d --build
 docker compose logs -f tg-api-proxy
 ```
 
-`config.yaml` обязателен и не включается в Git или образ. Пример содержит
-синтетические bot_id и адреса из сетей для документации: замените их перед запуском.
-Некорректная начальная конфигурация не позволит сервису запуститься.
+`config.yaml` is required and is excluded from Git and the image. The example uses
+synthetic bot IDs and IP addresses reserved for documentation: replace them before
+starting the service. An invalid initial configuration prevents startup.
 
-Compose передаёт файл стандартным механизмом `configs`:
+Compose supplies the file through its standard `configs` mechanism:
 
 ```yaml
 services:
@@ -31,11 +34,11 @@ configs:
     file: ./config.yaml
 ```
 
-По умолчанию HTTP-порт опубликован только на `127.0.0.1:8080`. Перед ним должен
-работать ваш reverse proxy с HTTPS. Контейнер работает без root, с файловой
-системой и конфигурацией только для чтения.
+By default, the HTTP port is published only on `127.0.0.1:8080`. Put your HTTPS
+reverse proxy in front of it. The container runs as a non-root user with a
+read-only filesystem and configuration.
 
-## Правила клиентов
+## Client rules
 
 ```yaml
 trusted_proxies:
@@ -50,66 +53,69 @@ clients:
       - "2001:db8::/48"
 ```
 
-- `name`: уникальное имя из латинских букв, цифр, `_` и `-`; используется в логах,
-  метриках и трассировках.
-- `bot_ids`: непустой список числовых идентификаторов — части токена до `:`.
-  Секретную часть токена в конфигурацию добавлять не нужно.
-- `allowed_ips`: непустой список IP-адресов, подсетей CIDR и включительных диапазонов
-  `начало-конец`. Поддерживаются IPv4 и IPv6, одиночные записи и любые их сочетания.
-- `trusted_proxies`: адреса, подсети или диапазоны доверенных промежуточных прокси.
-  Пустой или отсутствующий список означает, что forwarding-заголовки игнорируются.
+- `name`: a unique name containing Latin letters, digits, `_`, and `-`; used in
+  logs, metrics, and traces.
+- `bot_ids`: a nonempty list of numeric identifiers—the part of each token before
+  `:`. Do not put the secret part of the token in the configuration.
+- `allowed_ips`: a nonempty list of IP addresses, CIDR subnets, and inclusive
+  `start-end` ranges. Supports IPv4 and IPv6, individual entries, and any mixture
+  of these forms.
+- `trusted_proxies`: addresses, subnets, or ranges of trusted intermediate proxies.
+  An empty or omitted list means forwarding headers are ignored.
 
-Запрос разрешён, только если его `bot_id` и исходный IP совпали с правилами ровно
-одного клиента. Один бот может встречаться у разных клиентов с разными IP. Если
-конкретный запрос подходит нескольким клиентам, он получает `403`.
-Неподходящий IP или бот тоже получает `403`, неправильный путь API — `400`.
-`GET /healthz` доступен без IP-проверки и возвращает `200`; трафик в Telegram он не
-пересылает.
+A request is allowed only if its `bot_id` and source IP match the rules of exactly
+one client. The same bot can belong to different clients with different IPs. If a
+request matches multiple clients, it receives `403`.
+An unauthorized IP or bot also receives `403`; an invalid API path receives `400`.
+`GET /healthz` is available without an IP check and returns `200`; it does not
+forward traffic to Telegram.
 
-Неизвестные поля YAML, повторяющиеся имена, пустые обязательные списки и неверные
-IP считаются ошибкой. IPv6 с идентификатором интерфейса (`%eth0`) не поддерживается.
-Для IPv4-подсетей используйте обычную запись `192.0.2.0/24`, а не mapped IPv6.
-Mapped IPv4 в адресе соединения (`::ffff:192.0.2.10`) сопоставляется с обычным IPv4.
+Unknown YAML fields, duplicate names, empty required lists, and invalid IPs are
+configuration errors. IPv6 interface identifiers (`%eth0`) are not supported.
+Use native IPv4 notation such as `192.0.2.0/24` for IPv4 subnets, rather than
+IPv4-mapped IPv6 notation. An IPv4-mapped connection address
+(`::ffff:192.0.2.10`) is matched against its native IPv4 equivalent.
 
-## Автоматическое перечитывание
+## Automatic reload
 
-Сервис проверяет содержимое файла раз в секунду. Новая версия сначала целиком
-разбирается и проверяется, затем одновременно заменяет все правила клиентов и
-доверенных прокси. Перезапуск процесса для этого не требуется.
+The service checks the file contents once per second. Each new version is fully
+parsed and validated, then replaces all client rules and trusted proxies in one
+atomic update. No process restart is required.
 
-При ошибке чтения, YAML или правил сервис пишет ошибку в JSON-лог и продолжает
-использовать **последнюю корректную конфигурацию**. Неизменившаяся ошибочная версия
-не засоряет лог сообщениями каждую секунду. После исправления файл проверяется
-снова. Успешное применение отмечается сообщением `config applied`.
-Уже допущенные запросы завершаются по прежним правилам; новые проверяются по новым.
+If reading, YAML parsing, or rule validation fails, the service logs the error in
+JSON and continues using the **last valid configuration**. An unchanged invalid
+version does not produce another error every second. The file is checked again
+when corrected. Successful updates are logged as `config applied`.
+Requests already admitted finish under the previous rules; new requests use the
+updated rules.
 
-**Особенность `configs.file` в обычном Docker Compose:** это монтирование отдельного
-файла. Обновление содержимого существующего файла видно контейнеру. Некоторые
-редакторы сохраняют через создание нового файла и `rename`; тогда контейнер может
-продолжить читать старый файл. Сервис не может увидеть содержимое, которое Docker
-ему не предоставляет. Используйте сохранение без замены файла либо после такой
-замены пересоздайте контейнер:
+**A limitation of `configs.file` in ordinary Docker Compose:** it mounts a single
+file. Changes to the contents of the existing file are visible inside the
+container. Some editors save by creating a new file and replacing the original
+with `rename`; the container may then keep reading the old file. The service
+cannot see contents that Docker does not expose. Save without replacing the file,
+or recreate the container after such a replacement:
 
 ```sh
 docker compose up -d --force-recreate tg-api-proxy
 ```
 
-Обычный `restart` не гарантирует обновления монтирования. Это ограничение
-[одиночных файловых bind mounts](https://github.com/moby/moby/issues/6011),
-а атомарное применение проверенной конфигурации внутри сервиса сохраняется.
-При записи файла по частям наблюдатель может увидеть промежуточное содержимое:
-невалидная версия будет отклонена, следующая корректная — применена.
+A regular `restart` does not guarantee that the mount is refreshed. This is a
+limitation of [single-file bind mounts](https://github.com/moby/moby/issues/6011);
+the service still applies validated configuration atomically.
+When a file is written in parts, the watcher may observe intermediate contents:
+an invalid version is rejected, and the next valid version is applied.
 
-## Настройка reverse proxy
+## Reverse proxy configuration
 
-Заголовок `X-Forwarded-For` учитывается **только от доверенного TCP-соседа**.
-Готовый middleware Chi проходит цепочку справа налево и пропускает явно доверенные
-адреса. Первый недоверенный адрес становится адресом клиента. Ошибка в проверяемой
-части цепочки или отсутствие определимого клиента приводят к отказу; значения
-левее найденного клиента ничего не переопределяют. `X-Real-IP` и прочие заголовки
-не предоставляют доступ.
+`X-Forwarded-For` is considered **only when the TCP peer is trusted**.
+Chi's middleware walks the chain from right to left, skipping explicitly trusted
+addresses. The first untrusted address becomes the client IP. A malformed entry
+in the examined part of the chain, or the absence of an identifiable client,
+causes access to be denied; entries to the left of the identified client cannot
+override it. `X-Real-IP` and other headers do not grant access.
 
-Для Nginx, который сам принимает внешние соединения и завершает TLS:
+For Nginx accepting external connections and terminating TLS:
 
 ```nginx
 location / {
@@ -122,23 +128,24 @@ location / {
 }
 ```
 
-В `trusted_proxies` укажите адрес, с которого приложение действительно видит
-соединение Nginx. При публикации Docker-порта это может быть адрес шлюза Docker,
-а не `127.0.0.1`. В стартовой диагностике первого запроса поле `remote_addr`
-показывает TCP-соседа. Не доверяйте всем частным сетям: указывайте точные адреса
-прокси или выделенную подсеть.
+Set `trusted_proxies` to the address from which the application actually sees the
+Nginx connection. With a published Docker port, this may be the Docker gateway
+address rather than `127.0.0.1`. The initial diagnostic log for the first request
+shows the TCP peer in `remote_addr`. Do not trust all private networks: specify
+exact proxy addresses or a dedicated subnet.
 
-Если Nginx/Traefik работает контейнером, присоедините сервис к общей Docker-сети
-и уберите `ports` из Compose. Reverse proxy обращается к `http://tg-api-proxy:8080`,
-а в `trusted_proxies` указывается его адрес в этой сети. Сам reverse proxy должен
-заменять входящий `X-Forwarded-For` либо корректно добавлять адрес своего соседа.
+If Nginx/Traefik runs in a container, connect the service to a shared Docker
+network and remove `ports` from Compose. The reverse proxy connects to
+`http://tg-api-proxy:8080`, and `trusted_proxies` contains its address on that
+network. The reverse proxy must overwrite the incoming `X-Forwarded-For` header
+or correctly append its peer's address.
 
-## Использование клиентом
+## Client usage
 
-Обычный вызов: `https://proxy.example.com/bot<TOKEN>/<method>`.
-Скачивание файла: `https://proxy.example.com/file/bot<TOKEN>/<file_path>`.
+Regular API call: `https://proxy.example.com/bot<TOKEN>/<method>`.
+File download: `https://proxy.example.com/file/bot<TOKEN>/<file_path>`.
 
-Для `python-telegram-bot`:
+For `python-telegram-bot`:
 
 ```python
 app = (
@@ -150,40 +157,41 @@ app = (
 )
 ```
 
-`getUpdates` ограничен 45 секундами по умолчанию. При достижении своего дедлайна
-прокси возвращает `{"ok":true,"result":[]}` с заголовком `X-Proxy-Clamped-Timeout`.
-Остальные запросы и файлы передаются потоком без этого дедлайна.
+`getUpdates` has a 45-second deadline by default. When this deadline is reached,
+the proxy returns `{"ok":true,"result":[]}` with an `X-Proxy-Clamped-Timeout`
+header. Other requests and files are streamed without this deadline.
 
-## Настройки процесса и наблюдаемость
+## Process settings and observability
 
-Необязательный `.env` для Compose можно создать из `.env.example`. Настройки
-окружения требуют пересоздания контейнера; автоматически обновляется только YAML
-с клиентами и доверенными прокси.
+You can create an optional Compose `.env` file from `.env.example`. Environment
+settings require container recreation; only the YAML file containing clients and
+trusted proxies is reloaded automatically.
 
-| Переменная | По умолчанию | Назначение |
+| Variable | Default | Purpose |
 |---|---|---|
-| `CONFIG_FILE` | `config.yaml` | Путь файла при нативном запуске; в Compose `/config/config.yaml` |
-| `PORT` | `8080` | Внутренний HTTP-порт, от 1024 до 65535 |
-| `PROXY_PORT` | `8080` | Публикуемый порт Compose на localhost |
-| `LONG_POLL_MAX_TIMEOUT` | `45` | Дедлайн `getUpdates`, секунды |
-| `LOG_EXCLUDE_METHODS` | `getUpdates` | Успешные вызовы каких методов не писать в access-лог; `none` — писать все |
-| `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` | пусто | Стандартные настройки исходящих соединений |
-| `OTEL_SDK_DISABLED` | `true` в Compose | Выключить экспорт метрик и трассировок |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | пусто | HTTP-адрес OTLP-коллектора при включённом экспорте |
-| `OTEL_RESOURCE_ATTRIBUTES` | пусто | Дополнительные атрибуты ресурса OpenTelemetry |
+| `CONFIG_FILE` | `config.yaml` | File path for a native run; `/config/config.yaml` in Compose |
+| `PORT` | `8080` | Internal HTTP port, from 1024 to 65535 |
+| `PROXY_PORT` | `8080` | Compose port published on localhost |
+| `LONG_POLL_MAX_TIMEOUT` | `45` | `getUpdates` deadline, in seconds |
+| `LOG_EXCLUDE_METHODS` | `getUpdates` | Methods whose successful calls are omitted from the access log; `none` logs all |
+| `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` | empty | Standard outgoing connection settings |
+| `OTEL_SDK_DISABLED` | `true` in Compose | Disable metrics and trace export |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | OTLP collector HTTP endpoint when export is enabled |
+| `OTEL_RESOURCE_ATTRIBUTES` | empty | Additional OpenTelemetry resource attributes |
 
-Access-логи пишутся в stdout в JSON, ошибки `4xx`/`5xx` логируются независимо от
-фильтра методов. Метрики и трассировки также не зависят от этого фильтра.
-Для OpenTelemetry задайте `OTEL_SDK_DISABLED=false` и адрес своего коллектора;
-Compose использует OTLP HTTP/protobuf. Недоступность коллектора не останавливает
-прокси. Без исходящего прокси соединения с Telegram идут напрямую.
+Access logs are written to stdout as JSON. Responses with `4xx`/`5xx` status codes
+are logged regardless of the method filter. Metrics and traces are also
+independent of this filter. To enable OpenTelemetry, set `OTEL_SDK_DISABLED=false`
+and your collector endpoint; Compose uses OTLP HTTP/protobuf. An unavailable
+collector does not stop the proxy. Without an outgoing proxy, connections to
+Telegram are direct.
 
-Адреса и подсети разбирает стандартный `net/netip`, диапазоны и наборы —
-`go4.org/netipx`, YAML — `goccy/go-yaml`, доверенную цепочку — middleware Chi.
-Собственная прикладная логика ограничена правилами клиентов и безопасным применением
-обновлений файла.
+Addresses and subnets are parsed by the standard `net/netip` package, ranges and
+sets by `go4.org/netipx`, YAML by `goccy/go-yaml`, and the trusted proxy chain by
+Chi middleware. Application-specific logic is limited to client rules and safely
+applying file updates.
 
-## Разработка
+## Development
 
 ```sh
 go test -race ./... -count=1
@@ -192,5 +200,5 @@ go build ./...
 OTEL_SDK_DISABLED=true CONFIG_FILE=config.yaml go run .
 ```
 
-Приложение не читает `.env` самостоятельно. В тестах используются локальные
-HTTP-серверы; реальные токены и обращения к Telegram не требуются.
+The application does not load `.env` itself. Tests use local HTTP servers; real
+bot tokens and calls to Telegram are not required.
