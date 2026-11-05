@@ -37,6 +37,7 @@
 - [x] Use BuildKit target arguments in the Dockerfile and native builder platform.
 - [x] Set the default Compose image to ghcr.io/ekho/tg-api-proxy:latest, add the requested comment in config.example.yaml, and document image naming, triggers, tags and usage in both READMEs.
 - [x] Run actionlint, BuildKit checks and a real two-platform OCI build; inspect architecture metadata and extracted binaries.
-- [ ] Obtain independent read-only review and address actionable findings; run affected checks and commit using Conventional Commits with a co-author footer.
+- [x] Run the pinned official metadata-action against the manual `latest` tag regression and normal branch/version cases; actionlint validates the workflow expressions.
+- [x] Obtain independent read-only review and address actionable findings; run affected checks and commit using Conventional Commits with a co-author footer.
 
 User approved the complete scheme and native execution preference carries forward. No further implementation choice needs approval.
