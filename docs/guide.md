@@ -40,14 +40,25 @@ pass. Images support `linux/amd64` and `linux/arm64`.
 
 | Trigger | Image tags |
 |---|---|
-| Push to `main` | `latest`, `sha-<full commit SHA>` |
+| Push to `main`, including a merged PR | `v<version>`, `sha-<full commit SHA>`, and `latest` for the current tip of `main` |
 | Push a `v*` Git tag, such as `v1.2.3` | `v1.2.3`, `sha-<full commit SHA>` |
-| Manual run (`workflow_dispatch`) | SHA tag; `latest` only when running from `main` |
+| Manual run (`workflow_dispatch`) | SHA tag and `latest` for the current tip of `main` |
 
-Pull requests run checks without publishing. Version tags do not update `latest`.
-The publishing job uses the built-in `GITHUB_TOKEN` with `packages: write`; no
-additional repository secret is required. Docker Actions are pinned to commit
-SHAs. The image is published only when the workflow runs successfully on GitHub.
+CI checks every incoming PR commit and its title against Conventional Commits.
+Use a conventional subject for the final merge or squash commit as well.
+The `check` job can be required in GitHub's branch settings to block merging a PR
+that fails this check.
+
+After a successful push to `main`, CI calculates the next stable SemVer with
+`git-cliff`. The first version is `v0.1.0`. After that, `!` or a `BREAKING CHANGE`
+footer increments major, `feat` increments minor, and other changes increment
+patch. The highest applicable increment wins. Once the versioned image is
+published, CI creates the matching Git tag and GitHub Release for that commit.
+Rerunning a successfully tagged commit reuses its tag. Manual runs and pushes
+of existing version tags publish images according to the table above.
+
+Both jobs use the built-in `GITHUB_TOKEN` with scoped permissions. The image
+job can write packages and the release job can write releases and tags.
 
 `compose.yaml` uses `ghcr.io/ekho/tg-api-proxy:latest` by default. Run
 `docker compose pull` before `docker compose up -d` to download the current image.
