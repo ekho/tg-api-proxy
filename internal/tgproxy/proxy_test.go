@@ -1,6 +1,7 @@
 package tgproxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -17,6 +18,7 @@ const (
 	testBotID      = "123456"
 	testToken      = "123456:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"
 	testClientName = "service-a"
+	testProxyKey   = "test-proxy-key-0123456789"
 )
 
 const defaultAccessFixture = `clients:
@@ -78,6 +80,60 @@ func TestHealthzSkipsAuth(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("GET /healthz = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestOptionalProxyKey(t *testing.T) {
+	const keyHeader = "X-Proxy-Key"
+	const policy = `clients:
+ - {name: keyed, bot_ids: ['123456'], allowed_ips: ['192.0.2.1'], proxy_key: '` + testProxyKey + `'}
+ - {name: key-only, bot_ids: ['234567'], proxy_key: '` + testProxyKey + `-other'}
+ - {name: unkeyed, bot_ids: ['345678'], allowed_ips: ['192.0.2.1']}
+`
+	access := testAccess(t, policy)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(r.Header.Values(keyHeader)) != 0 {
+			t.Error("proxy key reached upstream")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	u, _ := url.Parse(upstream.URL)
+	var logs bytes.Buffer
+	h, err := NewHandler(Config{Upstream: u, Access: access, Logger: slog.New(slog.NewJSONHandler(&logs, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name, bot, peer string
+		keys            []string
+		want            int
+	}{
+		{"correct key and IP", "123456", "192.0.2.1:1234", []string{testProxyKey}, 200},
+		{"missing key", "123456", "192.0.2.1:1234", nil, 401},
+		{"wrong key", "123456", "192.0.2.1:1234", []string{testProxyKey + "-other"}, 401},
+		{"duplicate header", "123456", "192.0.2.1:1234", []string{testProxyKey, testProxyKey}, 401},
+		{"wrong IP", "123456", "198.51.100.1:1234", []string{testProxyKey}, 403},
+		{"unknown bot", "999999", "192.0.2.1:1234", []string{testProxyKey}, 403},
+		{"key only", "234567", "198.51.100.1:1234", []string{testProxyKey + "-other"}, 200},
+		{"unkeyed client", "345678", "192.0.2.1:1234", nil, 200},
+		{"unkeyed client with header", "345678", "192.0.2.1:1234", []string{testProxyKey}, 200},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/bot"+tt.bot+strings.TrimPrefix(testToken, testBotID)+"/getMe", nil)
+			req.RemoteAddr = tt.peer
+			for _, key := range tt.keys {
+				req.Header.Add(keyHeader, key)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != tt.want {
+				t.Fatalf("status=%d want=%d", rec.Code, tt.want)
+			}
+		})
+	}
+	if strings.Contains(logs.String(), testProxyKey) {
+		t.Error("proxy key appeared in request logs")
 	}
 }
 

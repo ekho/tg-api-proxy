@@ -10,6 +10,11 @@ clients:
   - name: service-a
     # Numeric part before ':' in the Telegram token. Do not put tokens here.
     bot_ids: ["123456"]
+    # Optional. Choose one of these auth blocks and replace the placeholders.
+    # auth: {type: header, header: X-API-Key, value: "<generated key>"}
+    # auth: {type: bearer, token: "<generated token>"}
+    # auth: {type: basic, username: "<username>", password: "<generated password>"}
+    # Omit allowed_ips to allow any source IP for these bot IDs.
     allowed_ips:
       - "203.0.113.10"               # single IPv4
       - "198.51.100.0/24"            # subnet

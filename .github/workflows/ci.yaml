@@ -4,19 +4,39 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+    types: [opened, synchronize, reopened, edited]
   workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  queue: max
 permissions:
   contents: read
 jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      release_tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
+        with:
+          tool: git-cliff@2.14.2
+      - name: Conventional Commits
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            git-cliff --offline --no-exec --context --with-commit="$PR_TITLE" "$PR_BASE..$PR_HEAD" > /dev/null
+          else
+            git-cliff --offline --no-exec --context > /dev/null
+          fi
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
@@ -37,6 +57,25 @@ jobs:
         run: |
           cp config.example.yaml config.yaml
           docker compose config --quiet
+      - name: Resolve release version
+        id: version
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          tag=$(git tag --points-at HEAD --list 'v*' --sort=-version:refname |
+            awk '/^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ && !found {print; found=1}')
+          if [[ -z "$tag" ]]; then
+            tag=$(git-cliff --offline --no-exec --unreleased --bumped-version)
+          fi
+          if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo 'Expected a stable SemVer release tag' >&2
+            exit 1
+          fi
+          if git show-ref --verify --quiet "refs/tags/$tag" &&
+            [[ "$(git rev-parse "refs/tags/$tag^{commit}")" != "$GITHUB_SHA" ]]; then
+            echo "$tag already belongs to a different commit" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
   publish-image:
     needs: check
@@ -48,6 +87,25 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify release tag before publishing
+        if: needs.check.outputs.release_tag != ''
+        env:
+          RELEASE_TAG: ${{ needs.check.outputs.release_tag }}
+        run: |
+          ref="refs/tags/$RELEASE_TAG"
+          remote_tag=$(git ls-remote origin "$ref")
+          if [[ -n "$remote_tag" ]]; then
+            git fetch --no-tags origin "$ref"
+            test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$GITHUB_SHA"
+          fi
+      - name: Check whether to update latest
+        id: latest
+        if: github.ref == 'refs/heads/main'
+        run: |
+          remote_main=$(git ls-remote --exit-code origin refs/heads/main)
+          if [[ "${remote_main%%$'\t'*}" == "$GITHUB_SHA" ]]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          fi
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - name: Log in to GHCR
@@ -63,8 +121,9 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           flavor: latest=false
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ steps.latest.outputs.enabled == 'true' }}
             type=sha,format=long
+            type=raw,value=${{ needs.check.outputs.release_tag || 'unreleased' }},enable=${{ needs.check.outputs.release_tag != '' }}
             type=ref,event=tag,enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
       - name: Build and publish image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
@@ -76,3 +135,24 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  release:
+    needs: [check, publish-image]
+    if: needs.check.outputs.release_tag != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.check.outputs.release_tag }}
+        run: |
+          if tag_commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha 2> /dev/null); then
+            test "$tag_commit" = "$GITHUB_SHA"
+          fi
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --generate-notes
+          fi
+          test "$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)" = "$GITHUB_SHA"

@@ -96,12 +96,20 @@ func TestIPAccessTrustBoundary(t *testing.T) {
 }
 
 func TestHandlerAppliesReloadedTrustAndClientsTogether(t *testing.T) {
+	const rotatedKey = testProxyKey + "-rotated"
+	const rotatedHeader = "X-Reload-Key"
+	initial := strings.Replace(requestPolicy, "allowed_ips:", "proxy_key: '"+testProxyKey+"', allowed_ips:", 1)
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte(requestPolicy), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(initial), 0600); err != nil {
 		t.Fatal(err)
 	}
-	current := testAccess(t, requestPolicy)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{"ok":true}`) }))
+	current := testAccess(t, initial)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(HeaderProxyKey) != "" || r.Header.Get(rotatedHeader) != "" {
+			t.Error("proxy credential reached upstream")
+		}
+		io.WriteString(w, `{"ok":true}`)
+	}))
 	defer upstream.Close()
 	u, _ := url.Parse(upstream.URL)
 	h, err := NewHandler(Config{Upstream: u, Access: current, Logger: slog.New(slog.DiscardHandler)})
@@ -115,31 +123,37 @@ func TestHandlerAppliesReloadedTrustAndClientsTogether(t *testing.T) {
 		WatchAccessFile(ctx, path, time.Millisecond, current, slog.New(slog.DiscardHandler))
 	}()
 	t.Cleanup(func() { cancel(); <-done })
-	check := func(peer, ip string, want int) {
+	check := func(peer, ip, header, key string, want int) {
 		t.Helper()
 		req := httptest.NewRequest("GET", "/bot"+testToken+"/getMe", nil)
 		req.RemoteAddr = peer
 		req.Header.Set("X-Forwarded-For", ip)
+		req.Header.Set(header, key)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		if rec.Code != want {
 			t.Fatalf("%s/%s: %d want %d", peer, ip, rec.Code, want)
 		}
 	}
-	check("10.0.0.2:1234", "192.0.2.10", 200)
-	replacement := strings.ReplaceAll(requestPolicy, "10.0.0.2", "10.0.0.4")
+	check("10.0.0.2:1234", "192.0.2.10", HeaderProxyKey, testProxyKey, 200)
+	replacement := strings.ReplaceAll(initial, "10.0.0.2", "10.0.0.4")
 	replacement = strings.ReplaceAll(replacement, "192.0.2.10", "192.0.2.20")
 	replacement = strings.ReplaceAll(replacement, "service-a", "service-b")
+	replacement = strings.Replace(replacement, "proxy_key: '"+testProxyKey+"'", "auth: {type: header, header: "+rotatedHeader+", value: '"+rotatedKey+"'}", 1)
 	if err := os.WriteFile(path, []byte(replacement), 0600); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(3 * time.Second)
-	for current.Load().Authorize("123456", netip.MustParseAddr("192.0.2.20")) == nil && time.Now().Before(deadline) {
+	for time.Now().Before(deadline) {
+		if c, _ := current.Load().Authorize("123456", netip.MustParseAddr("192.0.2.20"), http.Header{rotatedHeader: {rotatedKey}}); c != nil {
+			break
+		}
 		time.Sleep(time.Millisecond)
 	}
-	check("10.0.0.2:1234", "192.0.2.10", 403)
-	check("10.0.0.2:1234", "192.0.2.20", 403)
-	check("10.0.0.4:1234", "192.0.2.20", 200)
+	check("10.0.0.2:1234", "192.0.2.10", HeaderProxyKey, testProxyKey, 403)
+	check("10.0.0.2:1234", "192.0.2.20", rotatedHeader, rotatedKey, 403)
+	check("10.0.0.4:1234", "192.0.2.20", HeaderProxyKey, testProxyKey, 401)
+	check("10.0.0.4:1234", "192.0.2.20", rotatedHeader, rotatedKey, 200)
 }
 
 func TestAdmittedRequestFinishesAfterRevocation(t *testing.T) {
