@@ -66,6 +66,7 @@ trusted_proxies:
 clients:
   - name: service-a
     bot_ids: ["123456", "654321"]
+    # auth: {type: header, header: X-API-Key, value: "<generated key>"}
     allowed_ips:
       - "203.0.113.10"
       - "198.51.100.0/24"
@@ -77,24 +78,48 @@ clients:
   logs, metrics, and traces.
 - `bot_ids`: a nonempty list of numeric identifiers—the part of each token before
   `:`. Do not put the secret part of the token in the configuration.
-- `allowed_ips`: a nonempty list of IP addresses, CIDR subnets, and inclusive
-  `start-end` ranges. Supports IPv4 and IPv6, individual entries, and any mixture
-  of these forms.
+- Omit `allowed_ips` to allow any source IP for the client's `bot_ids`. If you
+  set the field, provide a nonempty list of IPv4 or IPv6 addresses, CIDR subnets,
+  or inclusive `start-end` ranges. Both `[]` and `null` are configuration errors.
+- Set `auth` to require credentials from this client. Omit both `auth` and
+  `proxy_key` for access without credentials. An explicit `auth: null` is invalid.
 - `trusted_proxies`: addresses, subnets, or ranges of trusted intermediate proxies.
   An empty or omitted list means forwarding headers are ignored.
 
-A request is allowed only if its `bot_id` and source IP match the rules of exactly
-one client. The same bot can belong to different clients with different IPs. If a
-request matches multiple clients, it receives `403`.
-An unauthorized IP or bot also receives `403`; an invalid API path receives `400`.
-`GET /healthz` is available without an IP check and returns `200`; it does not
-forward traffic to Telegram.
+A request must match exactly one client by `bot_id` and meet any IP and credential
+requirements for that client. Clients can share a bot, so a separate rule without
+a key may also allow that bot. A request matching multiple clients, an unlisted
+bot, or a disallowed IP receives `403`. If the bot and IP match a rule that
+requires credentials and no rule allows the request, a missing, invalid, or
+repeated credential header returns `401` with a `WWW-Authenticate` challenge.
+An invalid API path returns `400`.
+`GET /healthz` returns `200` without access checks and serves a local response.
 
 Unknown YAML fields, duplicate names, empty required lists, and invalid IPs are
 configuration errors. IPv6 interface identifiers (`%eth0`) are not supported.
 Use native IPv4 notation such as `192.0.2.0/24` for IPv4 subnets, rather than
 IPv4-mapped IPv6 notation. An IPv4-mapped connection address
 (`::ffff:192.0.2.10`) is matched against its native IPv4 equivalent.
+
+### Authentication
+
+Each client can select one scheme. Use HTTPS and quote credential values in the
+private `config.yaml` so YAML reads them as strings. `openssl rand -hex 32`
+generates a value usable in all three schemes.
+
+| `auth.type` | Other fields in `auth` | Request credentials |
+|---|---|---|
+| `header` | `header`, `value` | The configured header and its exact value, for example `X-API-Key` |
+| `bearer` | `token` | `Authorization: Bearer <token>` with the configured static token |
+| `basic` | `username`, `password` | HTTP Basic credentials in `Authorization` |
+
+Use distinct credentials for different clients. The `header` scheme reserves
+HTTP routing, framing, forwarding, tracing, and diagnostic header names.
+`proxy_key` is shorthand for a key in `X-Proxy-Key`. It requires at least 16
+characters from `A-Za-z0-9_-` and cannot be combined with `auth` on one client.
+The proxy strips `Authorization`, `Proxy-Authorization`, `X-Proxy-Key`, and all
+custom credential headers in the active policy before forwarding to Telegram.
+Changes to credentials and header names apply when the configuration reloads.
 
 ## Automatic reload
 
@@ -131,9 +156,10 @@ an invalid version is rejected, and the next valid version is applied.
 `X-Forwarded-For` is considered **only when the TCP peer is trusted**.
 Chi's middleware walks the chain from right to left, skipping explicitly trusted
 addresses. The first untrusted address becomes the client IP. A malformed entry
-in the examined part of the chain, or the absence of an identifiable client,
-causes access to be denied; entries to the left of the identified client cannot
-override it. `X-Real-IP` and other headers do not grant access.
+in the examined part of the chain or a chain with no identifiable client leaves
+the client IP unknown. Such a request can only match a client that omits
+`allowed_ips`. Entries to the left of the identified client cannot override it.
+`X-Real-IP` and other headers do not grant access.
 
 For Nginx accepting external connections and terminating TLS:
 
@@ -187,7 +213,14 @@ and [Compose reset overrides](https://docs.docker.com/reference/compose-file/mer
 Regular API call: `https://proxy.example.com/bot<TOKEN>/<method>`.
 File download: `https://proxy.example.com/file/bot<TOKEN>/<file_path>`.
 
-For `python-telegram-bot`:
+Send the configured credentials on API calls and file downloads. For a Bearer
+client, `PROXY_TOKEN` holds the configured token.
+
+```sh
+curl -H "Authorization: Bearer $PROXY_TOKEN" "https://proxy.example.com/bot${TOKEN}/getMe"
+```
+
+For `python-telegram-bot` with a client that uses no credentials:
 
 ```python
 app = (

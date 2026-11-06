@@ -2,11 +2,9 @@
 
 [Русский](README.ru.md) | [Detailed documentation](docs/guide.md)
 
-A transparent Telegram Bot API proxy in Go with per-client IP access rules.
-Supports regular API calls, file transfers, and long polling. Clients only change
-the API base URL; no additional proxy key or authentication header is required.
-Bot tokens are passed in the URL as with Telegram; they are not stored and are
-redacted in logs.
+A transparent Telegram Bot API proxy in Go with optional per-client IP rules and
+header authentication. Supports regular API calls, file transfers, and long
+polling. Bot tokens are passed in the URL as with Telegram and redacted in logs.
 
 ## Configure and run
 
@@ -23,12 +21,18 @@ trusted_proxies: ["172.30.0.10"]
 clients:
   - name: service-a
     bot_ids: ["123456"]
+    # auth: {type: bearer, token: "<generated token>"}
     allowed_ips:
       - "203.0.113.10"
       - "198.51.100.0/24"
       - "192.0.2.10-192.0.2.30"
       - "2001:db8::/48"
 ```
+
+Omit `allowed_ips` for a client whose configured bots can be used from any IP.
+Set `auth` to require a header key, a Bearer token, or Basic authentication.
+For the Bearer example, generate a token with `openssl rand -hex 32` and send it
+in `Authorization: Bearer <token>`. Omit `auth` for a client without credentials.
 
 `trusted_proxies` must contain the reverse proxy's actual source IP. With Nginx
 on the host, the app may see a Docker gateway address; with Traefik, use its

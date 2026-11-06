@@ -32,6 +32,8 @@ const emptyUpdates = `{"ok":true,"result":[]}`
 // defaultLongPollMax — потолок getUpdates; reverse proxy должен ждать дольше.
 const defaultLongPollMax = 45 * time.Second
 
+type accessPolicyKey struct{}
+
 // Config — зависимости обработчика.
 type Config struct {
 	// Upstream — база Bot API (https://api.telegram.org).
@@ -108,6 +110,11 @@ func NewHandler(cfg Config) (http.Handler, error) {
 		// тело посреди копирования ответа.
 		ErrorLog: slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 		Rewrite: func(pr *httputil.ProxyRequest) {
+			policy := pr.In.Context().Value(accessPolicyKey{}).(*AccessConfig)
+			for _, name := range policy.credentialHeaders {
+				pr.Out.Header.Del(name)
+				pr.Out.Trailer.Del(name)
+			}
 			pr.Out.URL.Scheme = cfg.Upstream.Scheme
 			pr.Out.URL.Host = cfg.Upstream.Host
 			// Обязательно: Rewrite меняет URL.Host, но заголовок Host остаётся
@@ -162,20 +169,28 @@ func NewHandler(cfg Config) (http.Handler, error) {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			client := policy.Authorize(botID, ip)
+			client, challenges := policy.Authorize(botID, ip, r.Header)
 			if client == nil {
-				w.WriteHeader(http.StatusForbidden)
+				if len(challenges) == 0 {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+				for _, challenge := range challenges {
+					w.Header().Add("WWW-Authenticate", challenge)
+				}
+				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
 			if info := infoFrom(r.Context()); info != nil {
 				info.client = client.Name
 			}
+			ctx := context.WithValue(r.Context(), accessPolicyKey{}, policy)
 			if IsLongPoll(r.URL.Path) {
-				ctx, cancel := context.WithTimeout(r.Context(), cfg.LongPollMax)
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, cfg.LongPollMax)
 				defer cancel()
-				r = r.WithContext(ctx)
 			}
-			rp.ServeHTTP(w, r)
+			rp.ServeHTTP(w, r.WithContext(ctx))
 		})).ServeHTTP(w, r)
 	})
 

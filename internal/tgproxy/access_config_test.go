@@ -36,7 +36,7 @@ func TestParseAccessConfigMatchesClient(t *testing.T) {
 	} {
 		t.Run(tt.ip+"/"+tt.bot, func(t *testing.T) {
 			got := ""
-			if c := p.Authorize(tt.bot, netip.MustParseAddr(tt.ip)); c != nil {
+			if c, _ := p.Authorize(tt.bot, netip.MustParseAddr(tt.ip), nil); c != nil {
 				got = c.Name
 			}
 			if got != tt.want {
@@ -52,8 +52,13 @@ func TestParseAccessConfigRejectsInvalidPolicy(t *testing.T) {
 		{"unknown root field", accessFixture + "typo: true\n"},
 		{"unknown client field", strings.Replace(accessFixture, "bot_ids:", "bot_idz:", 1)},
 		{"empty IPs", "clients: [{name: a, bot_ids: ['1'], allowed_ips: []}]"},
-		{"missing IPs", "clients: [{name: a, bot_ids: ['1']}]"},
-		{"empty bots", "clients: [{name: a, bot_ids: [], allowed_ips: ['192.0.2.1']}]"},
+		{"null IPs", "clients: [{name: a, bot_ids: ['1'], allowed_ips: null}]"},
+		{"empty proxy key", "clients: [{name: a, bot_ids: ['1'], proxy_key: ''}]"},
+		{"null proxy key", "clients: [{name: a, bot_ids: ['1'], proxy_key: null}]"},
+		{"short proxy key", "clients: [{name: a, bot_ids: ['1'], proxy_key: 'short'}]"},
+		{"invalid proxy key characters", "clients: [{name: a, bot_ids: ['1'], proxy_key: 'test key with spaces'}]"},
+		{"duplicate proxy key", "clients: [{name: a, bot_ids: ['1'], proxy_key: '" + testProxyKey + "'}, {name: b, bot_ids: ['2'], proxy_key: '" + testProxyKey + "'}]"},
+		{"empty bots", "clients: [{name: a, bot_ids: []}]"},
 		{"bad bot", strings.Replace(accessFixture, "123456", "12abc", 1)},
 		{"bad name", strings.Replace(accessFixture, "service-a", "bad!name", 1)},
 		{"duplicate client", accessFixture + "  - name: service-a\n    bot_ids: ['2']\n    allowed_ips: ['192.0.2.3']\n"},
@@ -75,6 +80,43 @@ func TestParseAccessConfigRejectsInvalidPolicy(t *testing.T) {
 	}
 }
 
+func TestInvalidYAMLDoesNotExposeProxyKey(t *testing.T) {
+	_, err := ParseAccessConfig([]byte("clients: [{name: a, proxy_key: '" + testProxyKey + "', bot_ids: [}"))
+	if err == nil {
+		t.Fatal("invalid YAML accepted")
+	}
+	if strings.Contains(err.Error(), testProxyKey) {
+		t.Error("YAML error exposed a proxy key")
+	}
+}
+
+func TestAccessWithoutAllowedIPs(t *testing.T) {
+	p, err := ParseAccessConfig([]byte(`clients:
+ - {name: unrestricted, bot_ids: ['1', '2']}
+ - {name: restricted, bot_ids: ['2'], allowed_ips: ['192.0.2.1']}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name, bot string
+		ip        netip.Addr
+		allowed   bool
+	}{
+		{"IPv4", "1", netip.MustParseAddr("198.51.100.1"), true},
+		{"IPv6", "1", netip.MustParseAddr("2001:db8::1"), true},
+		{"unknown IP", "1", netip.Addr{}, true},
+		{"unknown bot", "3", netip.MustParseAddr("192.0.2.1"), false},
+		{"overlapping clients", "2", netip.MustParseAddr("192.0.2.1"), false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got, _ := p.Authorize(tt.bot, tt.ip, nil); (got != nil) != tt.allowed {
+				t.Fatalf("client=%v want allowed=%t", got, tt.allowed)
+			}
+		})
+	}
+}
+
 func TestAccessSharedBotsAndAmbiguousClients(t *testing.T) {
 	p, err := ParseAccessConfig([]byte(`clients:
  - {name: a, bot_ids: ['1'], allowed_ips: ['192.0.2.0/24']}
@@ -84,7 +126,7 @@ func TestAccessSharedBotsAndAmbiguousClients(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tt := range []struct{ ip, want string }{{"192.0.2.2", "a"}, {"198.51.100.1", "b"}, {"192.0.2.1", ""}} {
-		c := p.Authorize("1", netip.MustParseAddr(tt.ip))
+		c, _ := p.Authorize("1", netip.MustParseAddr(tt.ip), nil)
 		got := ""
 		if c != nil {
 			got = c.Name

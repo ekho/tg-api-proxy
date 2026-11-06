@@ -18,7 +18,7 @@ func waitForPolicy(t *testing.T, current *atomic.Pointer[AccessConfig], want str
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		c := current.Load().Authorize("123456", netip.MustParseAddr("192.0.2.10"))
+		c, _ := current.Load().Authorize("123456", netip.MustParseAddr("192.0.2.10"), nil)
 		if c != nil && c.Name == want {
 			return
 		}
@@ -72,7 +72,7 @@ func TestReloadRetainsLastValidAndRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(60 * time.Millisecond)
-	c := current.Load().Authorize("123456", netip.MustParseAddr("192.0.2.10"))
+	c, _ := current.Load().Authorize("123456", netip.MustParseAddr("192.0.2.10"), nil)
 	if c == nil || c.Name != "service-c" {
 		t.Fatal("file removal replaced valid policy")
 	}
@@ -107,7 +107,7 @@ func TestReloadConcurrentReadersSeeCompletePolicies(t *testing.T) {
 	workers.Go(func() { WatchAccessFile(ctx, path, time.Millisecond, &current, slog.New(slog.DiscardHandler)) })
 	workers.Go(func() {
 		for ctx.Err() == nil {
-			c := current.Load().Authorize("123456", netip.MustParseAddr("192.0.2.10"))
+			c, _ := current.Load().Authorize("123456", netip.MustParseAddr("192.0.2.10"), nil)
 			if c == nil || (c.Name != "service-a" && c.Name != "service-b") {
 				t.Error("reader observed an incomplete policy")
 				return
